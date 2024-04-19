@@ -20,7 +20,7 @@ setup(
       'Development Status :: 4 - Beta',
       'Intended Audience :: Science/Research',
       'Topic :: Scientific/Engineering :: Mathematics',
-      'License :: OSI Approved :: Apache 2.0 License',
+      'License :: OSI Approved :: Apache Software License',
       'Programming Language :: Python :: 3.8',
   ],
 )
