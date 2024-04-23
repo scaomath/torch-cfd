@@ -21,7 +21,9 @@ import torch
 import torch.nn as nn
 import torch.fft as fft
 from . import grids
+from tqdm.auto import tqdm
 
+TQDM_ITERS = 100
 
 Array = torch.Tensor
 Grid = grids.Grid
@@ -59,6 +61,93 @@ class ImplicitExplicitODE(nn.Module):
         raise NotImplementedError
 
 
+def low_storage_runge_kutta_crank_nicolson(
+    u: torch.Tensor,
+    dt: float,
+    params: Dict,
+    equation: ImplicitExplicitODE,
+) -> Array:
+    """
+    ported from jax functional programming to be tensor2tensor
+    Time stepping via "low-storage" Runge-Kutta and Crank-Nicolson steps.
+
+    These scheme are second order accurate for the implicit terms, but potentially
+    higher order accurate for the explicit terms. This seems to be a favorable
+    tradeoff when the explicit terms dominate, e.g., for modeling turbulent
+    fluids.
+
+    Per Canuto: "[these methods] have been widely used for the time-discretization
+    in applications of spectral methods."
+
+    Args:
+      alphas: alpha coefficients.
+      betas: beta coefficients.
+      gammas: gamma coefficients.
+      equation.F: explicit terms (convection, rhs, drag).
+      equation.G: implicit terms (diffusion).
+      equation.implicit_solve: implicit solver, when evaluates at an input (B, n, n), outputs (B, n, n).
+      dt: time step.
+
+    Input: w^{t_i} (B, n, n)
+    Returns: w^{t_{i+1}} (B, n, n)
+
+    Reference:
+      Canuto, C., Yousuff Hussaini, M., Quarteroni, A. & Zang, T. A.
+      Spectral Methods: Evolution to Complex Geometries and Applications to
+      Fluid Dynamics. (Springer Berlin Heidelberg, 2007).
+      https://doi.org/10.1007/978-3-540-30728-0 (Appendix D.3)
+    """
+    dt = dt
+    alphas = params["alphas"]
+    betas = params["betas"]
+    gammas = params["gammas"]
+    F = equation.explicit_terms
+    G = equation.implicit_terms
+    G_inv = equation.implicit_solve
+
+    if len(alphas) - 1 != len(betas) != len(gammas):
+        raise ValueError("number of RK coefficients does not match")
+
+    h = 0
+    for k in range(len(betas)):
+        h = F(u) + betas[k] * h
+        mu = 0.5 * dt * (alphas[k + 1] - alphas[k])
+        u = G_inv(u + gammas[k] * dt * h + mu * G(u), mu)
+    return u
+
+
+def crank_nicolson_rk4(
+    u: Array,
+    dt: float,
+    equation: ImplicitExplicitODE,
+) -> Array:
+    """Time stepping via Crank-Nicolson and RK4 ("Carpenter-Kennedy")."""
+    params = dict(
+        alphas=[
+            0,
+            0.1496590219993,
+            0.3704009573644,
+            0.6222557631345,
+            0.9582821306748,
+            1,
+        ],
+        betas=[0, -0.4178904745, -1.192151694643, -1.697784692471, -1.514183444257],
+        gammas=[
+            0.1496590219993,
+            0.3792103129999,
+            0.8229550293869,
+            0.6994504559488,
+            0.1530572479681,
+        ],
+    )
+    return low_storage_runge_kutta_crank_nicolson(
+        u,
+        dt=dt,
+        params=params,
+        equation=equation,
+    )
+
+
 class NavierStokes2D(nn.Module):
     """Breaks the Navier-Stokes equation into implicit and explicit parts.
 
@@ -80,6 +169,7 @@ class NavierStokes2D(nn.Module):
         drag: float = 0.0,
         smooth: bool = True,
         forcing_fn: Optional[Callable] = None,
+        solver: Optional[Callable] = crank_nicolson_rk4,
     ):
         super().__init__()
         self.viscosity = viscosity
@@ -87,6 +177,7 @@ class NavierStokes2D(nn.Module):
         self.drag = drag
         self.smooth = smooth
         self.forcing_fn = forcing_fn
+        self.solver = solver
         self._initialize()
 
     def _initialize(self):
@@ -172,109 +263,63 @@ class NavierStokes2D(nn.Module):
 
         return terms
 
-    def explicit_terms(self):
-        return lambda vort_hat: self._explicit_terms(vort_hat)
+    def explicit_terms(self, vort_hat):
+        return self._explicit_terms(vort_hat)
 
-    def implicit_terms(self):
-        return lambda vort_hat: self.linear_term * vort_hat
+    def implicit_terms(self, vort_hat):
+        return self.linear_term * vort_hat
 
-    def implicit_solve(self, time_step):
-        return lambda vort_hat: 1 / (1 - time_step * self.linear_term) * vort_hat
+    def implicit_solve(self, vort_hat, dt):
+        return 1 / (1 - dt * self.linear_term) * vort_hat
 
-    def step(self, time_step):
+    def get_trajectory(
+        self,
+        w0: Array,
+        dt: float,
+        time_steps: int,
+        record_every_steps=1,
+        pbar=False,
+        pbar_desc="",
+        require_grad=False,
+    ):
         """
-        this is for tests
+        vorticity stacked in the time dimension
         """
-        return lambda w: self.explicit_terms()(w) + self.implicit_solve(
-            time_step=time_step
-        )(w)
+        w_all = []
+        v_all = []
+        dwdt_all = []
+        w = w0
+        update_iters = time_steps // TQDM_ITERS
+        with tqdm(total=time_steps) as pbar:
+            for t in range(time_steps):
+                w, dwdt = self.forward(w, dt=dt)
+                w.requires_grad_(require_grad)
+                dwdt.requires_grad_(require_grad)
+
+                if t % update_iters == 0:
+                    pbar.set_description(pbar_desc)
+                    pbar.update(update_iters)
+
+                if t % record_every_steps == 0:
+                    w_ = w.detach().clone()
+                    dwdt_ = dwdt.detach().clone()
+                    v = self.vorticity_to_velocity(self.grid, w_)
+                    v = torch.stack(v, dim=0)
+                    w_all.append(w_)
+                    v_all.append(v)
+                    dwdt_all.append(dwdt_)
+        result = {
+            var_name: torch.stack(var, dim=0)
+            for var_name, var in zip(
+                ["vorticity", "velocity", "vort_t"], [w_all, v_all, dwdt_all]
+            )
+        }
+        return result
+
+    def step(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
     def forward(self, vort_hat, dt):
-        return crank_nicolson_rk4(self, vort_hat, dt)
-
-
-def low_storage_runge_kutta_crank_nicolson(
-    u: torch.Tensor,
-    params: Dict,
-    equation: ImplicitExplicitODE,
-    time_step: float,
-) -> Array:
-    """
-    ported from jax functional programming to be tensor2tensor
-    Time stepping via "low-storage" Runge-Kutta and Crank-Nicolson steps.
-
-    These scheme are second order accurate for the implicit terms, but potentially
-    higher order accurate for the explicit terms. This seems to be a favorable
-    tradeoff when the explicit terms dominate, e.g., for modeling turbulent
-    fluids.
-
-    Per Canuto: "[these methods] have been widely used for the time-discretization
-    in applications of spectral methods."
-
-    Args:
-      alphas: alpha coefficients.
-      betas: beta coefficients.
-      gammas: gamma coefficients.
-      equation.F: explicit terms (convection, rhs, drag).
-      equation.G: implicit terms (diffusion).
-      equation.implicit_solve: implicit solver, when evaluates at an input (B, n, n), outputs (B, n, n).
-      time_step: time step.
-
-    Input: w^{t_i} (B, n, n)
-    Returns: w^{t_{i+1}} (B, n, n)
-
-    Reference:
-      Canuto, C., Yousuff Hussaini, M., Quarteroni, A. & Zang, T. A.
-      Spectral Methods: Evolution to Complex Geometries and Applications to
-      Fluid Dynamics. (Springer Berlin Heidelberg, 2007).
-      https://doi.org/10.1007/978-3-540-30728-0 (Appendix D.3)
-    """
-    dt = time_step
-    alphas = params["alphas"]
-    betas = params["betas"]
-    gammas = params["gammas"]
-    F = equation.explicit_terms()
-    G = equation.implicit_terms()
-    G_inv = equation.implicit_solve
-
-    if len(alphas) - 1 != len(betas) != len(gammas):
-        raise ValueError("number of RK coefficients does not match")
-
-    h = 0
-    for k in range(len(betas)):
-        h = F(u) + betas[k] * h
-        mu = 0.5 * dt * (alphas[k + 1] - alphas[k])
-        u = G_inv(mu)(u + gammas[k] * dt * h + mu * G(u))
-    return u
-
-
-def crank_nicolson_rk4(
-    equation: ImplicitExplicitODE,
-    u: Array,
-    time_step: float,
-) -> Array:
-    """Time stepping via Crank-Nicolson and RK4 ("Carpenter-Kennedy")."""
-    params = dict(
-        alphas=[
-            0,
-            0.1496590219993,
-            0.3704009573644,
-            0.6222557631345,
-            0.9582821306748,
-            1,
-        ],
-        betas=[0, -0.4178904745, -1.192151694643, -1.697784692471, -1.514183444257],
-        gammas=[
-            0.1496590219993,
-            0.3792103129999,
-            0.8229550293869,
-            0.6994504559488,
-            0.1530572479681,
-        ],
-    )
-    return low_storage_runge_kutta_crank_nicolson(
-        u,
-        params=params,
-        equation=equation,
-        time_step=time_step,
-    )
+        vort_hat_new = self.solver(vort_hat, dt, self)
+        dvortdt_hat = 1 / dt * (vort_hat_new - vort_hat)
+        return vort_hat_new, dvortdt_hat
