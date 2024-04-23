@@ -9,8 +9,9 @@
 name: Publish Python 🐍 distributions 📦 to PyPI
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+     - '*'
 
 jobs:
   build-n-publish:
@@ -37,12 +38,15 @@ jobs:
     - name: Update version in setup.py
       run: >-
         sed -i "s/{{VERSION_PLACEHOLDER}}/${{ steps.tag.outputs.TAG_NAME }}/g" setup.py
+    
+    - name: Install build
+      run: python -m pip install build
 
     - name: Build a binary wheel and a source tarball
       run: python -m build --sdist --wheel --outdir dist/
 
     - name: Publish distribution 📦 to PyPI
-      uses: pypa/gh-action-pypi-publish@main
+      uses: pypa/gh-action-pypi-publish@master
       with:
         user: __token__
         password: ${{ secrets.PYPI_API_TOKEN }}
