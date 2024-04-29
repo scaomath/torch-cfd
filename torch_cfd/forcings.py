@@ -15,36 +15,213 @@
 # Modifications copyright (C) 2024 S.Cao
 # ported Google's Jax-CFD functional template to PyTorch's tensor ops
 
-from typing import Tuple, Optional
+from typing import Optional, Tuple
+
 import torch
+import torch.nn as nn
+
 from . import grids
 
 Array = torch.Tensor
 Grid = grids.Grid
 GridArray = grids.GridArray
 
-def kolmogorov_forcing(
-    grid: Grid,
-    v: Tuple[Array, Array],
-    scale: float = 1,
-    k: int = 2,
-    swap_xy: bool = False,
-    offsets: Optional[Tuple[Tuple[float, ...], ...]] = None,
-    device: Optional[torch.device] = None,
-) -> Array:
-    """Returns the Kolmogorov forcing function for turbulence in 2D."""
-    if offsets is None:
-        offsets = grid.cell_faces
-    if grid.device is None and device is not None:
-        grid.device = device
-    if swap_xy:
-        x = grid.mesh(offsets[1])[0]
-        v = GridArray(scale * torch.sin(k * x), offsets[1], grid)
-        u = GridArray(torch.zeros_like(v.data), (1, 1 / 2), grid)
-        f = (u, v)
-    else:
-        y = grid.mesh(offsets[0])[1]
-        u = GridArray(scale * torch.sin(k * y), offsets[0], grid)
-        v = GridArray(torch.zeros_like(u.data), (1 / 2, 1), grid)
-        f = (u, v)
-    return f
+
+class ForcingFn(nn.Module):
+    """
+    A meta class for forcing functions
+    """
+
+    def __init__(
+        self,
+        grid: Grid,
+        scale: float = 1,
+        k: int = 1,
+        diam: float = 1.0,
+        swap_xy: bool = False,
+        offsets: Optional[Tuple[Tuple[float, ...], ...]] = None,
+        device: Optional[torch.device] = None,
+        **kwargs,
+    ):
+        super().__init__()
+        self.grid = grid
+        self.scale = scale
+        self.k = k
+        self.diam = diam
+        self.swap_xy = swap_xy
+        self.offsets = grid.cell_faces if offsets is None else offsets
+        self.device = grid.device if device is None else device
+
+
+class KolmogorovForcing(ForcingFn):
+    """
+    The Kolmogorov forcing function used in
+    Sets up the flow that is used in Kochkov et al. [1].
+    which is based on Boffetta et al. [2].
+
+    Note in the port: this forcing belongs a larger class
+    of isotropic turbulence. See [3].
+
+    References:
+    [1] Machine learning-accelerated computational fluid dynamics. Dmitrii
+    Kochkov, Jamie A. Smith, Ayya Alieva, Qing Wang, Michael P. Brenner, Stephan
+    Hoyer Proceedings of the National Academy of Sciences May 2021, 118 (21)
+    e2101784118; DOI: 10.1073/pnas.2101784118.
+    https://doi.org/10.1073/pnas.2101784118
+
+    [2] Boffetta, Guido, and Robert E. Ecke. "Two-dimensional turbulence."
+    Annual review of fluid mechanics 44 (2012): 427-451.
+    https://doi.org/10.1146/annurev-fluid-120710-101240
+
+    [3] McWilliams, J. C. (1984). "The emergence of isolated coherent vortices
+    in turbulent flow". Journal of Fluid Mechanics, 146, 21-43.
+    """
+
+    def __init__(
+        self,
+        diam=2 * torch.pi,
+        offsets=((0, 0), (0, 0)),
+        *args,
+        **kwargs,
+    ):
+        super().__init__(
+            *args,
+            diam=diam,
+            offsets=offsets,
+            **kwargs,
+        )
+
+    def forward(
+        self,
+        grid: Optional[Grid],
+        velocity: Optional[Tuple[Array, Array]] = None,
+    ) -> Tuple[Array, Array]:
+        offsets = self.offsets
+        grid = self.grid if grid is None else grid
+        domain_factor = 2 * torch.pi / self.diam
+
+        if self.swap_xy:
+            x = grid.mesh(offsets[1])[0]
+            v = GridArray(
+                self.scale * torch.sin(self.k * domain_factor * x), offsets[1], grid
+            )
+            u = GridArray(torch.zeros_like(v.data), (1, 1 / 2), grid)
+            f = (u, v)
+        else:
+            y = grid.mesh(offsets[0])[1]
+            u = GridArray(
+                self.scale * torch.sin(self.k * domain_factor * y), offsets[0], grid
+            )
+            v = GridArray(torch.zeros_like(u.data), (1 / 2, 1), grid)
+            f = (u, v)
+        return f
+
+def potential_template(potential_func):
+    def wrapper(cls, x: Array, y: Array, s: float, k: float) -> Array:
+        return potential_func(x, y, s, k)
+    return wrapper
+    
+
+class SimpleSolenoidalForcing(ForcingFn):
+    """
+    A simple solenoidal (rotating, divergence free) forcing function template.
+    The template forcing is F = (-psi, psi) such that 
+    
+    Args:
+    grid: grid on which to simulate the flow
+    scale: a in the equation above, amplitude of the forcing
+    k: k in the equation above, wavenumber of the forcing
+    """
+
+    def __init__(
+        self,
+        scale=1,
+        diam=1.0,
+        k=1.0,
+        offsets=((0, 0), (0, 0)),
+        *args,
+        **kwargs,
+    ):
+        super().__init__(
+            *args,
+            scale=scale,
+            diam=diam,
+            k=k,
+            offsets=offsets,
+            **kwargs,
+        )
+    
+
+    @potential_template
+    def potential(*args, **kwargs) -> Array:
+        raise NotImplementedError
+
+    def forward(
+        self,
+        grid: Optional[Grid],
+        velocity: Optional[Tuple[Array, Array]] = None,
+    ) -> Tuple[Array, Array]:
+        offsets = self.offsets
+        grid = self.grid if grid is None else grid
+        domain_factor = 2 * torch.pi / self.diam
+        k = self.k * domain_factor
+        scale = 0.5 * self.scale / (2 * torch.pi) / self.k
+
+        if self.swap_xy:
+            x = grid.mesh(offsets[1])[0]
+            y = grid.mesh(offsets[0])[1]
+            rot = self.potential(x, y, scale, k)
+            v = GridArray(rot, offsets[1], grid)
+            u = GridArray(-rot, (1, 1 / 2), grid)
+            f = (u, v)
+        else:
+            x = grid.mesh(offsets[0])[0]
+            y = grid.mesh(offsets[1])[1]
+            rot = self.potential(x, y, scale, k)
+            u = GridArray(rot, offsets[0], grid)
+            v = GridArray(-rot, (1 / 2, 1), grid)
+            f = (u, v)
+        return f
+
+
+class SinCosForcing(SimpleSolenoidalForcing):
+    """
+    The solenoidal (divergence free) forcing function used in [4].
+
+    Note: in the vorticity-streamfunction formulation, the forcing
+    is actually the curl of the velocity field, which
+    is a*(sin(2*pi*k*(x+y)) + cos(2*pi*k*(x+y)))
+    a=0.1, k=1 in [4]
+
+    References:
+    [4] Li, Zongyi, et al. "Fourier Neural Operator for
+    Parametric Partial Differential Equations."
+    ICLR. 2020.
+
+    Args:
+    grid: grid on which to simulate the flow
+    scale: a in the equation above, amplitude of the forcing
+    k: k in the equation above, wavenumber of the forcing
+    """
+
+    def __init__(
+        self,
+        scale=0.1,
+        diam=1.0,
+        k=1.0,
+        offsets=((0, 0), (0, 0)),
+        *args,
+        **kwargs,
+    ):
+        super().__init__(
+            *args,
+            scale=scale,
+            diam=diam,
+            k=k,
+            offsets=offsets,
+            **kwargs,
+        )
+
+    @potential_template
+    def potential(x: Array, y: Array, s: float, k: float) -> Array:
+        return s * (torch.sin(k * (x + y)) - torch.cos(k * (x + y)))

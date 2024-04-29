@@ -15,7 +15,7 @@
 # Modifications copyright (C) 2024 S.Cao
 # ported Google's Jax-CFD functional template to PyTorch's tensor ops
 
-from typing import Callable, Dict, Optional
+from typing import Tuple, Callable, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -148,7 +148,7 @@ def crank_nicolson_rk4(
     )
 
 
-class NavierStokes2D(nn.Module):
+class NavierStokes2DSpectral(nn.Module):
     """Breaks the Navier-Stokes equation into implicit and explicit parts.
 
     Implicit parts are the linear terms and explicit parts are the non-linear
@@ -201,14 +201,24 @@ class NavierStokes2D(nn.Module):
         return filter_
 
     @staticmethod
-    def spectral_curl_2d(mesh, velocity_hat):
-        """Computes the 2D curl in the Fourier basis."""
-        kx, ky = mesh
-        uhat, vhat = velocity_hat
+    def spectral_curl_2d(vhat, rfft_mesh):
+        r"""
+        Computes the 2D curl in the Fourier basis.
+        det [d_x d_y \\ u v]
+        """
+        uhat, vhat = vhat
+        kx, ky = rfft_mesh
         return 2j * torch.pi * (vhat * kx - uhat * ky)
 
     @staticmethod
-    def vorticity_to_velocity(grid: Grid, w_hat: Array):
+    def spectral_grad_2d(vhat, rfft_mesh):
+        kx, ky = rfft_mesh
+        return 2j * torch.pi * kx * vhat, 2j * torch.pi * ky * vhat
+
+    @staticmethod
+    def vorticity_to_velocity(
+        grid: Grid, w_hat: Array, rfft_mesh: Optional[Tuple[Array, Array]] = None
+    ):
         """Constructs a function for converting vorticity to velocity, both in Fourier domain.
 
         Solves for the stream function and then uses the stream function to compute
@@ -229,9 +239,7 @@ class NavierStokes2D(nn.Module):
             Pages 509-520, ISSN 0045-7930,
             https://doi.org/10.1016/j.compfluid.2003.06.003.
         """
-        device = w_hat.device
-        kx, ky = grid.rfft_mesh()
-        kx, ky = kx.to(device), ky.to(device)
+        kx, ky = rfft_mesh if rfft_mesh is not None else grid.rfft_mesh()
         two_pi_i = 2 * torch.pi * 1j
         laplace = two_pi_i**2 * (abs(kx) ** 2 + abs(ky) ** 2)
         laplace[0, 0] = 1
@@ -239,9 +247,16 @@ class NavierStokes2D(nn.Module):
         vxhat = two_pi_i * ky * psi_hat
         vyhat = -two_pi_i * kx * psi_hat
         return vxhat, vyhat
+    
+    def residual(self,
+        vort_hat: Array,
+        vort_t_hat: Array,
+    ):
+        residual = vort_t_hat -  self.explicit_terms(vort_hat) - self.viscosity *  self.implicit_terms(vort_hat)
+        return residual
 
     def _explicit_terms(self, vort_hat):
-        vxhat, vyhat = self.vorticity_to_velocity(self.grid, vort_hat)
+        vxhat, vyhat = self.vorticity_to_velocity(self.grid, vort_hat, (self.kx, self.ky))
         vx, vy = fft.irfft2(vxhat), fft.irfft2(vyhat)
 
         grad_x_hat = 2j * torch.pi * self.kx * vort_hat
@@ -251,7 +266,7 @@ class NavierStokes2D(nn.Module):
         advection = -(grad_x * vx + grad_y * vy)
         advection_hat = fft.rfft2(advection)
 
-        if self.smooth is not None:
+        if self.smooth:
             advection_hat *= self.filter
 
         terms = advection_hat
@@ -259,7 +274,7 @@ class NavierStokes2D(nn.Module):
         if self.forcing_fn is not None:
             fx, fy = self.forcing_fn(self.grid, (vx, vy))
             fx_hat, fy_hat = fft.rfft2(fx.data), fft.rfft2(fy.data)
-            terms += self.spectral_curl_2d((self.kx, self.ky), (fx_hat, fy_hat))
+            terms += self.spectral_curl_2d((fx_hat, fy_hat), (self.kx, self.ky))
 
         return terms
 
@@ -276,7 +291,7 @@ class NavierStokes2D(nn.Module):
         self,
         w0: Array,
         dt: float,
-        time_steps: int,
+        T: float,
         record_every_steps=1,
         pbar=False,
         pbar_desc="",
@@ -288,7 +303,9 @@ class NavierStokes2D(nn.Module):
         w_all = []
         v_all = []
         dwdt_all = []
+        res_all = []
         w = w0
+        time_steps = int(T / dt)
         update_iters = time_steps // TQDM_ITERS
         with tqdm(total=time_steps) as pbar:
             for t in range(time_steps):
@@ -304,14 +321,18 @@ class NavierStokes2D(nn.Module):
                     w_ = w.detach().clone()
                     dwdt_ = dwdt.detach().clone()
                     v = self.vorticity_to_velocity(self.grid, w_)
+                    res = self.residual(w_, dwdt_)
+
                     v = torch.stack(v, dim=0)
                     w_all.append(w_)
                     v_all.append(v)
                     dwdt_all.append(dwdt_)
+                    res_all.append(res)
+
         result = {
             var_name: torch.stack(var, dim=0)
             for var_name, var in zip(
-                ["vorticity", "velocity", "vort_t"], [w_all, v_all, dwdt_all]
+                ["vorticity", "velocity", "vort_t", "residual"], [w_all, v_all, dwdt_all, res_all]
             )
         }
         return result

@@ -139,7 +139,12 @@ def projection(
     v: GridVariableVector,
     solve: Callable = solve_fast_diag,
 ) -> GridVariableVector:
-    """Apply pressure projection to make a velocity field divergence free."""
+    """
+    Apply pressure projection (a discrete Helmholtz decomposition)
+    to make a velocity field divergence free.
+    
+    Note: this will have a non-negligible error in fp32.
+    """
     grid = grids.consistent_grid(*v)
     pressure_bc = grids.get_pressure_bc_from_velocity(v)
 
@@ -190,10 +195,6 @@ def filtered_velocity_field(
     def spectral_density(k):
         return _log_normal_pdf(k, peak_wavenumber) / k ** (grid.ndim - 1)
 
-    # TODO(b/156601712): Switch back to the vmapped implementation of filtering:
-    # noise = jax.random.normal(rng_key, (grid.ndim,) + grid.shape)
-    # filtered = wrap_velocities(jax.vmap(spectral.filter, (None, 0, None))(
-    #     spectral_density, noise, grid), grid)
     random_states = [random_state + i for i in range(grid.ndim)]
     rng = torch.Generator()
     velocity_components = []
