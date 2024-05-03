@@ -23,10 +23,42 @@ import torch.fft as fft
 from . import grids
 from tqdm.auto import tqdm
 
-TQDM_ITERS = 100
+TQDM_ITERS = 500
 
 Array = torch.Tensor
 Grid = grids.Grid
+
+
+def stable_time_step(
+    dx: float = None,
+    dt: float = None,
+    max_velocity: float = 1.0,
+    max_courant_number: float = 0.5,
+    viscosity: float = 1e-3,
+    implicit_diffusion: bool = True,
+    ndim: int = 2,
+) -> float:
+    """
+    Calculate a stable time step satisfying the CFL condition
+    for the explicit advection term
+    if the diffusion is explicit, the time step is the smaller
+    of the advection and diffusion time steps.
+
+    Args:
+    max_velocity: maximum velocity.
+    max_courant_number: the Courant number used to choose the time step. Smaller
+      numbers will lead to more stable simulations. Typically this should be in
+      the range [0.5, 1).
+    dx: spatial mesh size, can be min(grid.step).
+    dt: time step.
+    """
+    dt_diffusion = dx
+
+    if not implicit_diffusion:
+        dt_diffusion = dx ** 2 / (viscosity * 2 ** (ndim))
+    dt_advection = max_courant_number * dx / max_velocity
+    dt = dt_advection if dt is None else dt
+    return min(dt_diffusion, dt_advection, dt)
 
 
 class ImplicitExplicitODE(nn.Module):
@@ -59,6 +91,90 @@ class ImplicitExplicitODE(nn.Module):
     ):
         """Solves `y - step_size * implicit_terms(y) = x` for y."""
         raise NotImplementedError
+
+
+def backward_forward_euler(
+    u: torch.Tensor,
+    dt: float,
+    equation: ImplicitExplicitODE,
+) -> Array:
+    """Time stepping via forward and backward Euler methods.
+
+    This method is first order accurate.
+
+    Args:
+        equation: equation to solve.
+        time_step: time step.
+
+    Returns:
+        Function that performs a time step.
+    """
+    F = equation.explicit_terms
+    G_inv = equation.implicit_solve
+
+    g = u + dt * F(u)
+    u = G_inv(g, dt)
+
+    return u
+
+
+def imex_crank_nicolson(
+    u: torch.Tensor,
+    dt: float,
+    equation: ImplicitExplicitODE,
+) -> Array:
+    """Time stepping via forward and backward Euler methods.
+
+    This method is first order accurate.
+
+    Args:
+        equation: equation to solve.
+        time_step: time step.
+
+    Returns:
+        Function that performs a time step.
+    """
+    F = equation.explicit_terms
+    G = equation.implicit_terms
+    G_inv = equation.implicit_solve
+
+    g = u + dt * F(u) + 0.5 * dt * G(u)
+    u = G_inv(g, 0.5 * dt)
+
+    return u
+
+
+def rk2_crank_nicolson(
+    u: torch.Tensor,
+    dt: float,
+    equation: ImplicitExplicitODE,
+) -> Array:
+    """Time stepping via Crank-Nicolson and 2nd order Runge-Kutta (Heun).
+
+    This method is second order accurate.
+
+    Args:
+      equation: equation to solve.
+      time_step: time step.
+
+    Returns:
+      Function that performs a time step.
+
+    Reference:
+      Chandler, G. J. & Kerswell, R. R. Invariant recurrent solutions embedded in
+      a turbulent two-dimensional Kolmogorov flow. J. Fluid Mech. 722, 554–595
+      (2013). https://doi.org/10.1017/jfm.2013.122 (Section 3)
+    """
+    F = equation.explicit_terms
+    G = equation.implicit_terms
+    G_inv = equation.implicit_solve
+
+    g = u + 0.5 * dt * G(u)
+    h = F(u)
+    u = G_inv(g + dt * h, 0.5 * dt)
+    h = 0.5 * (F(u) + h)
+    u = G_inv(g + dt * h, 0.5 * dt)
+    return u
 
 
 def low_storage_runge_kutta_crank_nicolson(
@@ -143,8 +259,8 @@ def crank_nicolson_rk4(
     return low_storage_runge_kutta_crank_nicolson(
         u,
         dt=dt,
-        params=params,
         equation=equation,
+        params=params,
     )
 
 
@@ -247,16 +363,23 @@ class NavierStokes2DSpectral(nn.Module):
         vxhat = two_pi_i * ky * psi_hat
         vyhat = -two_pi_i * kx * psi_hat
         return vxhat, vyhat
-    
-    def residual(self,
+
+    def residual(
+        self,
         vort_hat: Array,
         vort_t_hat: Array,
     ):
-        residual = vort_t_hat -  self.explicit_terms(vort_hat) - self.viscosity *  self.implicit_terms(vort_hat)
+        residual = (
+            vort_t_hat
+            - self.explicit_terms(vort_hat)
+            - self.viscosity * self.implicit_terms(vort_hat)
+        )
         return residual
 
     def _explicit_terms(self, vort_hat):
-        vxhat, vyhat = self.vorticity_to_velocity(self.grid, vort_hat, (self.kx, self.ky))
+        vxhat, vyhat = self.vorticity_to_velocity(
+            self.grid, vort_hat, (self.kx, self.ky)
+        )
         vx, vy = fft.irfft2(vxhat), fft.irfft2(vyhat)
 
         grad_x_hat = 2j * torch.pi * self.kx * vort_hat
@@ -272,10 +395,14 @@ class NavierStokes2DSpectral(nn.Module):
         terms = advection_hat
 
         if self.forcing_fn is not None:
-            fx, fy = self.forcing_fn(self.grid, (vx, vy))
-            fx_hat, fy_hat = fft.rfft2(fx.data), fft.rfft2(fy.data)
-            terms += self.spectral_curl_2d((fx_hat, fy_hat), (self.kx, self.ky))
-
+            if not self.forcing_fn.vorticity:
+                fx, fy = self.forcing_fn(self.grid, (vx, vy))
+                fx_hat, fy_hat = fft.rfft2(fx.data), fft.rfft2(fy.data)
+                terms += self.spectral_curl_2d((fx_hat, fy_hat), (self.kx, self.ky))
+            else:
+                f = self.forcing_fn(self.grid, vort_hat)
+                f_hat = fft.rfft2(f.data)
+                terms += f_hat
         return terms
 
     def explicit_terms(self, vort_hat):
@@ -332,7 +459,8 @@ class NavierStokes2DSpectral(nn.Module):
         result = {
             var_name: torch.stack(var, dim=0)
             for var_name, var in zip(
-                ["vorticity", "velocity", "vort_t", "residual"], [w_all, v_all, dwdt_all, res_all]
+                ["vorticity", "velocity", "vort_t", "residual"],
+                [w_all, v_all, dwdt_all, res_all],
             )
         }
         return result

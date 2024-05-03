@@ -15,7 +15,7 @@
 # Modifications copyright (C) 2024 S.Cao
 # ported Google's Jax-CFD functional template to PyTorch's tensor ops
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -27,9 +27,21 @@ Grid = grids.Grid
 GridArray = grids.GridArray
 
 
+def forcing_eval(eval_func):
+    def wrapper(
+        cls, grid: Grid, field: Optional[Union[Tuple[Array, Array], Array]]
+    ) -> Array:
+        return eval_func(grid, field)
+
+    return wrapper
+
+
 class ForcingFn(nn.Module):
     """
     A meta class for forcing functions
+
+    Args:
+    vorticity: whether the forcing function is a vorticity forcing
     """
 
     def __init__(
@@ -39,6 +51,7 @@ class ForcingFn(nn.Module):
         k: int = 1,
         diam: float = 1.0,
         swap_xy: bool = False,
+        vorticity: bool = False,
         offsets: Optional[Tuple[Tuple[float, ...], ...]] = None,
         device: Optional[torch.device] = None,
         **kwargs,
@@ -49,8 +62,28 @@ class ForcingFn(nn.Module):
         self.k = k
         self.diam = diam
         self.swap_xy = swap_xy
+        self.vorticity = vorticity
         self.offsets = grid.cell_faces if offsets is None else offsets
         self.device = grid.device if device is None else device
+
+    @forcing_eval
+    def velocity_eval(grid: Grid, velocity: Optional[Tuple[Array, Array]]) -> Array:
+        raise NotImplementedError
+
+    @forcing_eval
+    def vorticity_eval(grid: Grid, vorticity: Optional[Array]) -> Array:
+        raise NotImplementedError
+
+    def forward(
+        self,
+        grid: Optional[Grid],
+        velocity: Optional[Tuple[Array, Array]] = None,
+        vorticity: Optional[Array] = None,
+    ) -> Tuple[Array, Array]:
+        if not self.vorticity:
+            return self.velocity_eval(grid, velocity)
+        else:
+            return self.vorticity_eval(grid, vorticity)
 
 
 class KolmogorovForcing(ForcingFn):
@@ -81,6 +114,7 @@ class KolmogorovForcing(ForcingFn):
         self,
         diam=2 * torch.pi,
         offsets=((0, 0), (0, 0)),
+        vorticity=False,
         *args,
         **kwargs,
     ):
@@ -88,10 +122,11 @@ class KolmogorovForcing(ForcingFn):
             *args,
             diam=diam,
             offsets=offsets,
+            vorticity=vorticity,
             **kwargs,
         )
 
-    def forward(
+    def velocity_eval(
         self,
         grid: Optional[Grid],
         velocity: Optional[Tuple[Array, Array]] = None,
@@ -116,17 +151,50 @@ class KolmogorovForcing(ForcingFn):
             f = (u, v)
         return f
 
-def potential_template(potential_func):
+    def vorticity_eval(
+        self,
+        grid: Optional[Grid],
+        vorticity: Optional[Array] = None,
+    ) -> Array:
+        offsets = self.offsets
+        grid = self.grid if grid is None else grid
+        domain_factor = 2 * torch.pi / self.diam
+
+        if self.swap_xy:
+            x = grid.mesh(offsets[1])[0]
+            w = GridArray(
+                -self.scale
+                * self.k
+                * domain_factor
+                * torch.cos(self.k * domain_factor * x),
+                offsets[1],
+                grid,
+            )
+        else:
+            y = grid.mesh(offsets[0])[1]
+            w = GridArray(
+                -self.scale
+                * self.k
+                * domain_factor
+                * torch.cos(self.k * domain_factor * y),
+                offsets[0],
+                grid,
+            )
+        return w
+
+
+def scalar_potential(potential_func):
     def wrapper(cls, x: Array, y: Array, s: float, k: float) -> Array:
         return potential_func(x, y, s, k)
+
     return wrapper
-    
+
 
 class SimpleSolenoidalForcing(ForcingFn):
     """
     A simple solenoidal (rotating, divergence free) forcing function template.
-    The template forcing is F = (-psi, psi) such that 
-    
+    The template forcing is F = (-psi, psi) such that
+
     Args:
     grid: grid on which to simulate the flow
     scale: a in the equation above, amplitude of the forcing
@@ -139,6 +207,7 @@ class SimpleSolenoidalForcing(ForcingFn):
         diam=1.0,
         k=1.0,
         offsets=((0, 0), (0, 0)),
+        vorticity=True,
         *args,
         **kwargs,
     ):
@@ -148,15 +217,19 @@ class SimpleSolenoidalForcing(ForcingFn):
             diam=diam,
             k=k,
             offsets=offsets,
+            vorticity=vorticity,
             **kwargs,
         )
-    
 
-    @potential_template
+    @scalar_potential
     def potential(*args, **kwargs) -> Array:
         raise NotImplementedError
 
-    def forward(
+    @scalar_potential
+    def vort_potential(*args, **kwargs) -> Array:
+        raise NotImplementedError
+
+    def velocity_eval(
         self,
         grid: Optional[Grid],
         velocity: Optional[Tuple[Array, Array]] = None,
@@ -182,6 +255,26 @@ class SimpleSolenoidalForcing(ForcingFn):
             v = GridArray(-rot, (1 / 2, 1), grid)
             f = (u, v)
         return f
+
+    def vorticity_eval(
+        self,
+        grid: Optional[Grid],
+        vorticity: Optional[Array] = None,
+    ) -> Array:
+        offsets = self.offsets
+        grid = self.grid if grid is None else grid
+        domain_factor = 2 * torch.pi / self.diam
+        k = self.k * domain_factor
+        scale = self.scale
+
+        if self.swap_xy:
+            x = grid.mesh(offsets[1])[0]
+            y = grid.mesh(offsets[0])[1]
+            return self.vort_potential(x, y, scale, k)
+        else:
+            x = grid.mesh(offsets[0])[0]
+            y = grid.mesh(offsets[1])[1]
+            return self.vort_potential(x, y, scale, k)
 
 
 class SinCosForcing(SimpleSolenoidalForcing):
@@ -222,6 +315,10 @@ class SinCosForcing(SimpleSolenoidalForcing):
             **kwargs,
         )
 
-    @potential_template
+    @scalar_potential
     def potential(x: Array, y: Array, s: float, k: float) -> Array:
         return s * (torch.sin(k * (x + y)) - torch.cos(k * (x + y)))
+
+    @scalar_potential
+    def vort_potential(x: Array, y: Array, s: float, k: float) -> Array:
+        return s * (torch.cos(k * (x + y)) + torch.sin(k * (x + y)))

@@ -45,13 +45,34 @@ def wrap_velocities(
         for u, offset, bc in zip(v, grid.cell_faces, bcs)
     )
 
+def wrap_vorticity(
+    w: Array,
+    grid: grids.Grid,
+    bc: BoundaryConditions,
+    device: Optional[torch.device] = None,
+) -> GridVariable:
+    """Wrap vorticity arrays for input into simulations."""
+    device = grid.device if device is None else device
+    return GridVariable(GridArray(w, grid.cell_faces, grid).to(device), bc)
 
-def _log_normal_pdf(x, mode: float, variance=0.25):
+
+def _log_normal_density(k, mode: float, variance=0.25):
     """Unscaled PDF for a log normal given `mode` and log variance 1."""
     mean = math.log(mode) + variance
-    logx = torch.log(x)
-    return torch.exp(-((mean - logx) ** 2) / 2 / variance - logx)
+    logk = torch.log(k)
+    return torch.exp(-((mean - logk) ** 2) / 2 / variance - logk)
 
+
+def McWilliams_density(k, mode: float, tau: float = 1.0):
+    """Implements the McWilliams spectral density function.
+    |\psi|^2 \sim k^{-1}(tau^2 + (k/k_0)^4)^{-1}
+    k_0 is a prescribed wavenumber that the energy peaks.
+    tau flattens the spectrum density at low wavenumbers to be bigger.
+
+    Refs:
+      McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow.
+    """
+    return (k * (tau**2 + (k / mode) ** 4)) ** (-1)
 
 def _angular_frequency_magnitude(grid: grids.Grid) -> Array:
     frequencies = [
@@ -74,6 +95,13 @@ def spectral_filter(
     # real, because our spectral density only depends on norm(k).
     return fft.ifftn(fft.fftn(v) * filters).real
 
+def streamfunc_normalize(k, psi):
+    # only half the spectrum for real ffts, needs spectral normalisation
+    nx, ny = psi.shape
+    psih = fft.fft2(psi)
+    uh = k * psih
+    kinetic_energy = (2 * uh.abs() ** 2 / (nx * ny) ** 2).sum()
+    return psi / kinetic_energy.sqrt()
 
 def _rhs_transform(
     u: GridArray,
@@ -143,7 +171,9 @@ def projection(
     Apply pressure projection (a discrete Helmholtz decomposition)
     to make a velocity field divergence free.
     
-    Note: this will have a non-negligible error in fp32.
+    Note by S.Cao: this was originally implemented by the jax-cfd team
+    but using FDM results having a non-negligible error in fp32. 
+    One resolution is to use fp64 then cast back to fp32.
     """
     grid = grids.consistent_grid(*v)
     pressure_bc = grids.get_pressure_bc_from_velocity(v)
@@ -193,7 +223,7 @@ def filtered_velocity_field(
     # divide by `k ** (ndim - 1)` to account for the volume of the
     # `ndim - 1`-sphere of values with wavenumber `k`.
     def spectral_density(k):
-        return _log_normal_pdf(k, peak_wavenumber) / k ** (grid.ndim - 1)
+        return _log_normal_density(k, peak_wavenumber) / k ** (grid.ndim - 1)
 
     random_states = [random_state + i for i in range(grid.ndim)]
     rng = torch.Generator()
@@ -213,3 +243,38 @@ def filtered_velocity_field(
     for _ in range(iterations):
         velocity = project_and_normalize(velocity, maximum_velocity)
     return velocity
+
+
+def vorticity_field(
+    grid: grids.Grid,
+    peak_wavenumber: float = 3,
+    random_state: int = 0,
+) -> GridArray:
+    """Create vorticity field with a spectral filtering
+    using the McWilliams power spectrum density function.
+
+    Args:
+      rng_key: key for seeding the random initial vorticity field.
+      grid: the grid on which the vorticity field is defined.
+      maximum_velocity: the maximum speed in the velocity field.
+      peak_wavenumber: the velocity field will be filtered so that the largest
+        magnitudes are associated with this wavenumber.
+
+    Returns:
+      A vorticity field with periodic boundary condition.
+    """
+
+    def spectral_density(k):
+        return McWilliams_density(k, peak_wavenumber)
+
+    rng = torch.Generator()
+    rng.manual_seed(random_state)
+    noise = torch.randn(grid.shape, generator=rng)
+    k = _angular_frequency_magnitude(grid)
+    psi = spectral_filter(spectral_density, noise, grid)
+    psi = streamfunc_normalize(k, psi)
+    vorticity = fft.ifftn(fft.fftn(psi) * k**2).real
+    boundary_condition = grids.periodic_boundary_conditions(grid.ndim)
+    vorticity = wrap_vorticity(vorticity, grid, boundary_condition)
+
+    return vorticity
