@@ -7,6 +7,10 @@
 
 ## Changelog
 
+### 0.0.5
+- added a batch dimension in solver matching. By default, the solver should work for input shapes `(batch, kx, ky)` or `(kx, ky)`. `get_trajectory()` output is either `(n_t, kx, ky)` or `(batch, n_t, kx, ky)`.
+
+
 ### 0.0.4
 - The forcing functions are now implemented as `nn.Module` and utilize a wrapper decorator for the potential function.
 - Added some common time stepping schemes, additional ones that Jax-CFD did not have includes the commonly used Crank-Nicholson IMEX.
