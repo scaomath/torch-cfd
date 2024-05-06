@@ -15,13 +15,14 @@
 # Modifications copyright (C) 2024 S.Cao
 # ported Google's Jax-CFD functional template to PyTorch's tensor ops
 
-from typing import Tuple, Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
-import torch.nn as nn
 import torch.fft as fft
-from . import grids
+import torch.nn as nn
 from tqdm.auto import tqdm
+
+from . import grids
 
 TQDM_ITERS = 500
 
@@ -55,7 +56,7 @@ def stable_time_step(
     dt_diffusion = dx
 
     if not implicit_diffusion:
-        dt_diffusion = dx ** 2 / (viscosity * 2 ** (ndim))
+        dt_diffusion = dx**2 / (viscosity * 2 ** (ndim))
     dt_advection = max_courant_number * dx / max_velocity
     dt = dt_advection if dt is None else dt
     return min(dt_diffusion, dt_advection, dt)
@@ -264,7 +265,7 @@ def crank_nicolson_rk4(
     )
 
 
-class NavierStokes2DSpectral(nn.Module):
+class NavierStokes2DSpectral(ImplicitExplicitODE):
     """Breaks the Navier-Stokes equation into implicit and explicit parts.
 
     Implicit parts are the linear terms and explicit parts are the non-linear
@@ -357,12 +358,13 @@ class NavierStokes2DSpectral(nn.Module):
         """
         kx, ky = rfft_mesh if rfft_mesh is not None else grid.rfft_mesh()
         two_pi_i = 2 * torch.pi * 1j
+        assert kx.shape[-2:] == w_hat.shape[-2:]
         laplace = two_pi_i**2 * (abs(kx) ** 2 + abs(ky) ** 2)
-        laplace[0, 0] = 1
+        laplace[..., 0, 0] = 1
         psi_hat = -1 / laplace * w_hat
-        vxhat = two_pi_i * ky * psi_hat
-        vyhat = -two_pi_i * kx * psi_hat
-        return vxhat, vyhat
+        u_hat = two_pi_i * ky * psi_hat
+        v_hat = -two_pi_i * kx * psi_hat
+        return u_hat, v_hat
 
     def residual(
         self,
@@ -426,8 +428,15 @@ class NavierStokes2DSpectral(nn.Module):
     ):
         """
         vorticity stacked in the time dimension
+        all inputs and outputs are in the frequency domain
+        input: w0 (*, n, n)
+        output:
+
+        vorticity (*, n_t, kx, ky)
+        velocity: tuple of (*, n_t, kx, ky)
         """
         w_all = []
+        u_all = []
         v_all = []
         dwdt_all = []
         res_all = []
@@ -445,22 +454,24 @@ class NavierStokes2DSpectral(nn.Module):
                     pbar.update(update_iters)
 
                 if t % record_every_steps == 0:
-                    w_ = w.detach().clone()
-                    dwdt_ = dwdt.detach().clone()
-                    v = self.vorticity_to_velocity(self.grid, w_)
-                    res = self.residual(w_, dwdt_)
+                    u, v = self.vorticity_to_velocity(self.grid, w)
+                    res = self.residual(w, dwdt)
 
-                    v = torch.stack(v, dim=0)
+                    w_, dwdt_, u, v, res = [
+                        var.detach().cpu().clone() for var in [w, dwdt, u, v, res]
+                    ]
+
                     w_all.append(w_)
+                    u_all.append(u)
                     v_all.append(v)
                     dwdt_all.append(dwdt_)
                     res_all.append(res)
 
         result = {
-            var_name: torch.stack(var, dim=0)
+            var_name: torch.stack(var, dim=-3)
             for var_name, var in zip(
-                ["vorticity", "velocity", "vort_t", "residual"],
-                [w_all, v_all, dwdt_all, res_all],
+                ["vorticity", "u", "v", "vort_t", "residual"],
+                [w_all, u_all, v_all, dwdt_all, res_all],
             )
         }
         return result
@@ -468,7 +479,15 @@ class NavierStokes2DSpectral(nn.Module):
     def step(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
-    def forward(self, vort_hat, dt):
-        vort_hat_new = self.solver(vort_hat, dt, self)
-        dvortdt_hat = 1 / dt * (vort_hat_new - vort_hat)
-        return vort_hat_new, dvortdt_hat
+    def forward(self, vort_hat, dt, steps=1):
+        """
+        vort_hat: (B, kx, ky) or (n_t, kx, ky) or (kx, ky)
+        - if rfft2 is used then the shape is (*, kx, ky//2+1)
+        - if (n_t, kx, ky), then the time step marches in the time
+        dimension in parallel.
+        """
+        vort_old = vort_hat
+        for _ in range(steps):
+            vort_hat = self.solver(vort_hat, dt, self)
+        dvortdt_hat = 1 / (steps * dt) * (vort_hat - vort_old)
+        return vort_hat, dvortdt_hat

@@ -16,13 +16,13 @@
 # ported Google's Jax-CFD functional template to PyTorch's tensor ops
 
 """Prepare initial conditions for simulations."""
-from typing import Callable, Optional, Sequence
 import math
+from typing import Callable, Optional, Sequence
+
 import torch
 import torch.fft as fft
-from . import grids
-from . import finite_differences as fd
-from . import fast_diagonalization as solver
+
+from . import grids, pressure
 
 Array = torch.Tensor
 GridArray = grids.GridArray
@@ -45,6 +45,7 @@ def wrap_velocities(
         for u, offset, bc in zip(v, grid.cell_faces, bcs)
     )
 
+
 def wrap_vorticity(
     w: Array,
     grid: grids.Grid,
@@ -57,7 +58,11 @@ def wrap_vorticity(
 
 
 def _log_normal_density(k, mode: float, variance=0.25):
-    """Unscaled PDF for a log normal given `mode` and log variance 1."""
+    """
+    Unscaled PDF for a log normal given `mode` and log variance 1.
+
+
+    """
     mean = math.log(mode) + variance
     logk = torch.log(k)
     return torch.exp(-((mean - logk) ** 2) / 2 / variance - logk)
@@ -73,6 +78,7 @@ def McWilliams_density(k, mode: float, tau: float = 1.0):
       McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow.
     """
     return (k * (tau**2 + (k / mode) ** 4)) ** (-1)
+
 
 def _angular_frequency_magnitude(grid: grids.Grid) -> Array:
     frequencies = [
@@ -95,103 +101,19 @@ def spectral_filter(
     # real, because our spectral density only depends on norm(k).
     return fft.ifftn(fft.fftn(v) * filters).real
 
+
 def streamfunc_normalize(k, psi):
-    # only half the spectrum for real ffts, needs spectral normalisation
     nx, ny = psi.shape
     psih = fft.fft2(psi)
-    uh = k * psih
-    kinetic_energy = (2 * uh.abs() ** 2 / (nx * ny) ** 2).sum()
+    uh_mag = k * psih
+    kinetic_energy = (2 * uh_mag.abs() ** 2 / (nx * ny) ** 2).sum()
     return psi / kinetic_energy.sqrt()
-
-def _rhs_transform(
-    u: GridArray,
-    bc: BoundaryConditions,
-) -> Array:
-    """Transform the RHS of pressure projection equation for stability.
-
-    In case of poisson equation, the kernel is subtracted from RHS for stability.
-
-    Args:
-      u: a GridArray that solves ∇²x = u.
-      bc: specifies boundary of x.
-
-    Returns:
-      u' s.t. u = u' + kernel of the laplacian.
-    """
-    u_data = u.data
-    for axis in range(u.grid.ndim):
-        if (
-            bc.types[axis][0] == grids.BCType.NEUMANN
-            and bc.types[axis][1] == grids.BCType.NEUMANN
-        ):
-            # if all sides are neumann, poisson solution has a kernel of constant
-            # functions. We substact the mean to ensure consistency.
-            u_data = u_data - torch.mean(u_data)
-    return u_data
-
-
-def solve_fast_diag(
-    v: GridVariableVector,
-    q0: Optional[GridVariable] = None,
-    pressure_bc: Optional[grids.ConstantBoundaryConditions] = None,
-    implementation: Optional[str] = None,
-) -> GridArray:
-    """Solve for pressure using the fast diagonalization approach."""
-    del q0  # unused
-    if pressure_bc is None:
-        pressure_bc = grids.get_pressure_bc_from_velocity(v)
-    if grids.has_all_periodic_boundary_conditions(*v):
-        circulant = True
-    else:
-        circulant = False
-        # only matmul implementation supports non-circulant matrices
-        implementation = "matmul"
-    grid = grids.consistent_grid(*v)
-    rhs = fd.divergence(v)
-    laplacians = list(map(fd.laplacian_matrix, grid.shape, grid.step))
-    laplacians = [lap.to(grid.device) for lap in laplacians]
-    rhs_transformed = _rhs_transform(rhs, pressure_bc)
-    pinv = solver.pseudoinverse(
-        rhs_transformed,
-        laplacians,
-        rhs_transformed.dtype,
-        hermitian=True,
-        circulant=circulant,
-        implementation=implementation,
-    )
-    # return applied(pinv)(rhs_transformed)
-    return GridArray(pinv, rhs.offset, rhs.grid)
-
-
-def projection(
-    v: GridVariableVector,
-    solve: Callable = solve_fast_diag,
-) -> GridVariableVector:
-    """
-    Apply pressure projection (a discrete Helmholtz decomposition)
-    to make a velocity field divergence free.
-    
-    Note by S.Cao: this was originally implemented by the jax-cfd team
-    but using FDM results having a non-negligible error in fp32. 
-    One resolution is to use fp64 then cast back to fp32.
-    """
-    grid = grids.consistent_grid(*v)
-    pressure_bc = grids.get_pressure_bc_from_velocity(v)
-
-    q0 = GridArray(torch.zeros(grid.shape), grid.cell_center, grid)
-    q0 = pressure_bc.impose_bc(q0)
-
-    q = solve(v, q0, pressure_bc)
-    q = pressure_bc.impose_bc(q)
-    q_grad = fd.forward_difference(q)
-    v_projected = tuple(u.bc.impose_bc(u.array - q_g) for u, q_g in zip(v, q_grad))
-    return v_projected
 
 
 def project_and_normalize(
     v: GridVariableVector, maximum_velocity: float = 1
 ) -> GridVariableVector:
-    v = projection(v)
+    v = pressure.projection(v)
     vmax = torch.linalg.norm(torch.stack([u.data for u in v]), dim=0).max()
     v = tuple(GridVariable(maximum_velocity * u.array / vmax, u.bc) for u in v)
     return v
@@ -256,7 +178,6 @@ def vorticity_field(
     Args:
       rng_key: key for seeding the random initial vorticity field.
       grid: the grid on which the vorticity field is defined.
-      maximum_velocity: the maximum speed in the velocity field.
       peak_wavenumber: the velocity field will be filtered so that the largest
         magnitudes are associated with this wavenumber.
 
