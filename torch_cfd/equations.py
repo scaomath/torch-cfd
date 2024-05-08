@@ -15,7 +15,7 @@
 # Modifications copyright (C) 2024 S.Cao
 # ported Google's Jax-CFD functional template to PyTorch's tensor ops
 
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
 import torch
 import torch.fft as fft
@@ -28,6 +28,60 @@ TQDM_ITERS = 500
 
 Array = torch.Tensor
 Grid = grids.Grid
+# ComplexDtype = Union[torch.complex64, torch.complex128] # this gives TypeError in 3.8.10
+
+
+def spectral_curl_2d(vhat, rfft_mesh):
+    r"""
+    Computes the 2D curl in the Fourier basis.
+    det [d_x d_y \\ u v]
+    """
+    uhat, vhat = vhat
+    kx, ky = rfft_mesh
+    return 2j * torch.pi * (vhat * kx - uhat * ky)
+
+
+def spectral_grad_2d(vhat, rfft_mesh):
+    kx, ky = rfft_mesh
+    return 2j * torch.pi * kx * vhat, 2j * torch.pi * ky * vhat
+
+
+def spectral_rot_2d(vhat, rfft_mesh):
+    vgradx, vgrady = spectral_grad_2d(vhat, rfft_mesh)
+    return vgrady, -vgradx
+
+
+def vorticity_to_velocity(
+    grid: Grid, w_hat: Array, rfft_mesh: Optional[Tuple[Array, Array]] = None
+):
+    """Constructs a function for converting vorticity to velocity, both in Fourier domain.
+
+    Solves for the stream function and then uses the stream function to compute
+    the velocity. This is the standard approach. A quick sketch can be found in
+    [1].
+
+    Args:
+        grid: the grid underlying the vorticity field.
+
+    Returns:
+        A function that takes a vorticity (rfftn) and returns a velocity vector
+        field.
+
+    Reference:
+        [1] Z. Yin, H.J.H. Clercx, D.C. Montgomery, An easily implemented task-based
+        parallel scheme for the Fourier pseudospectral solver applied to 2D
+        Navier-Stokes turbulence, Computers & Fluids, Volume 33, Issue 4, 2004,
+        Pages 509-520, ISSN 0045-7930,
+        https://doi.org/10.1016/j.compfluid.2003.06.003.
+    """
+    kx, ky = rfft_mesh if rfft_mesh is not None else grid.rfft_mesh()
+    two_pi_i = 2 * torch.pi * 1j
+    assert kx.shape[-2:] == w_hat.shape[-2:]
+    laplace = two_pi_i**2 * (abs(kx) ** 2 + abs(ky) ** 2)
+    laplace[..., 0, 0] = 1
+    psi_hat = -1 / laplace * w_hat
+    u_hat, v_hat = spectral_rot_2d(psi_hat, (kx, ky))
+    return (u_hat, v_hat), psi_hat
 
 
 def stable_time_step(
@@ -317,55 +371,6 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         filter_[-int(2 / 3 * n) // 2 :, : int(2 / 3 * (n // 2 + 1))] = 1
         return filter_
 
-    @staticmethod
-    def spectral_curl_2d(vhat, rfft_mesh):
-        r"""
-        Computes the 2D curl in the Fourier basis.
-        det [d_x d_y \\ u v]
-        """
-        uhat, vhat = vhat
-        kx, ky = rfft_mesh
-        return 2j * torch.pi * (vhat * kx - uhat * ky)
-
-    @staticmethod
-    def spectral_grad_2d(vhat, rfft_mesh):
-        kx, ky = rfft_mesh
-        return 2j * torch.pi * kx * vhat, 2j * torch.pi * ky * vhat
-
-    @staticmethod
-    def vorticity_to_velocity(
-        grid: Grid, w_hat: Array, rfft_mesh: Optional[Tuple[Array, Array]] = None
-    ):
-        """Constructs a function for converting vorticity to velocity, both in Fourier domain.
-
-        Solves for the stream function and then uses the stream function to compute
-        the velocity. This is the standard approach. A quick sketch can be found in
-        [1].
-
-        Args:
-            grid: the grid underlying the vorticity field.
-
-        Returns:
-            A function that takes a vorticity (rfftn) and returns a velocity vector
-            field.
-
-        Reference:
-            [1] Z. Yin, H.J.H. Clercx, D.C. Montgomery, An easily implemented task-based
-            parallel scheme for the Fourier pseudospectral solver applied to 2D
-            Navier-Stokes turbulence, Computers & Fluids, Volume 33, Issue 4, 2004,
-            Pages 509-520, ISSN 0045-7930,
-            https://doi.org/10.1016/j.compfluid.2003.06.003.
-        """
-        kx, ky = rfft_mesh if rfft_mesh is not None else grid.rfft_mesh()
-        two_pi_i = 2 * torch.pi * 1j
-        assert kx.shape[-2:] == w_hat.shape[-2:]
-        laplace = two_pi_i**2 * (abs(kx) ** 2 + abs(ky) ** 2)
-        laplace[..., 0, 0] = 1
-        psi_hat = -1 / laplace * w_hat
-        u_hat = two_pi_i * ky * psi_hat
-        v_hat = -two_pi_i * kx * psi_hat
-        return u_hat, v_hat
-
     def residual(
         self,
         vort_hat: Array,
@@ -379,10 +384,8 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         return residual
 
     def _explicit_terms(self, vort_hat):
-        vxhat, vyhat = self.vorticity_to_velocity(
-            self.grid, vort_hat, (self.kx, self.ky)
-        )
-        vx, vy = fft.irfft2(vxhat), fft.irfft2(vyhat)
+        vhat, _ = vorticity_to_velocity(self.grid, vort_hat, (self.kx, self.ky))
+        vx, vy = fft.irfft2(vhat[0]), fft.irfft2(vhat[1])
 
         grad_x_hat = 2j * torch.pi * self.kx * vort_hat
         grad_y_hat = 2j * torch.pi * self.ky * vort_hat
@@ -400,7 +403,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
             if not self.forcing_fn.vorticity:
                 fx, fy = self.forcing_fn(self.grid, (vx, vy))
                 fx_hat, fy_hat = fft.rfft2(fx.data), fft.rfft2(fy.data)
-                terms += self.spectral_curl_2d((fx_hat, fy_hat), (self.kx, self.ky))
+                terms += spectral_curl_2d((fx_hat, fy_hat), (self.kx, self.ky))
             else:
                 f = self.forcing_fn(self.grid, vort_hat)
                 f_hat = fft.rfft2(f.data)
@@ -415,66 +418,6 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
 
     def implicit_solve(self, vort_hat, dt):
         return 1 / (1 - dt * self.linear_term) * vort_hat
-
-    def get_trajectory(
-        self,
-        w0: Array,
-        dt: float,
-        T: float,
-        record_every_steps=1,
-        pbar=False,
-        pbar_desc="",
-        require_grad=False,
-    ):
-        """
-        vorticity stacked in the time dimension
-        all inputs and outputs are in the frequency domain
-        input: w0 (*, n, n)
-        output:
-
-        vorticity (*, n_t, kx, ky)
-        velocity: tuple of (*, n_t, kx, ky)
-        """
-        w_all = []
-        u_all = []
-        v_all = []
-        dwdt_all = []
-        res_all = []
-        w = w0
-        time_steps = int(T / dt)
-        update_iters = time_steps // TQDM_ITERS
-        with tqdm(total=time_steps) as pbar:
-            for t in range(time_steps):
-                w, dwdt = self.forward(w, dt=dt)
-                w.requires_grad_(require_grad)
-                dwdt.requires_grad_(require_grad)
-
-                if t % update_iters == 0:
-                    pbar.set_description(pbar_desc)
-                    pbar.update(update_iters)
-
-                if t % record_every_steps == 0:
-                    u, v = self.vorticity_to_velocity(self.grid, w)
-                    res = self.residual(w, dwdt)
-
-                    w_, dwdt_, u, v, res = [
-                        var.detach().cpu().clone() for var in [w, dwdt, u, v, res]
-                    ]
-
-                    w_all.append(w_)
-                    u_all.append(u)
-                    v_all.append(v)
-                    dwdt_all.append(dwdt_)
-                    res_all.append(res)
-
-        result = {
-            var_name: torch.stack(var, dim=-3)
-            for var_name, var in zip(
-                ["vorticity", "u", "v", "vort_t", "residual"],
-                [w_all, u_all, v_all, dwdt_all, res_all],
-            )
-        }
-        return result
 
     def step(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
@@ -491,3 +434,66 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
             vort_hat = self.solver(vort_hat, dt, self)
         dvortdt_hat = 1 / (steps * dt) * (vort_hat - vort_old)
         return vort_hat, dvortdt_hat
+
+
+def get_trajectory(
+    equation: ImplicitExplicitODE,
+    w0: Array,
+    dt: float,
+    num_steps: int = 1,
+    record_every_steps: int = 1,
+    dtype=torch.complex128,
+    pbar=False,
+    pbar_desc="",
+    require_grad=False,
+):
+    """
+    vorticity stacked in the time dimension
+    all inputs and outputs are in the frequency domain
+    input: w0 (*, n, n)
+    output:
+
+    vorticity (*, n_t, kx, ky)
+    psi: (*, n_t, kx, ky)
+
+    velocity can be computed from psi
+    (*, 2, n_t, kx, ky) by calling spectral_rot_2d
+    """
+    w_all = []
+    dwdt_all = []
+    res_all = []
+    psi_all = []
+    w = w0
+    tqdm_iters = num_steps if TQDM_ITERS > num_steps else TQDM_ITERS
+    update_iters = num_steps // tqdm_iters
+    with tqdm(total=num_steps) as pbar:
+        for t in range(num_steps):
+            w, dwdt = equation.forward(w, dt=dt)
+            w.requires_grad_(require_grad)
+            dwdt.requires_grad_(require_grad)
+
+            if t % update_iters == 0:
+                pbar.set_description(pbar_desc)
+                pbar.update(update_iters)
+
+            if t % record_every_steps == 0:
+                _, psi = vorticity_to_velocity(equation.grid, w)
+                res = equation.residual(w, dwdt)
+
+                w_, dwdt_, psi, res = [
+                    var.detach().cpu().clone().to(dtype) for var in [w, dwdt, psi, res]
+                ]
+
+                w_all.append(w_)
+                psi_all.append(psi)
+                dwdt_all.append(dwdt_)
+                res_all.append(res)
+
+    result = {
+        var_name: torch.stack(var, dim=-3)
+        for var_name, var in zip(
+            ["vorticity", "stream", "vort_t", "residual"],
+            [w_all, psi_all, dwdt_all, res_all],
+        )
+    }
+    return result
