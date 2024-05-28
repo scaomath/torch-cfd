@@ -30,7 +30,10 @@ import torch
 import torch.fft as fft
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils._pytree as pytree
+try:
+    from torch.utils._pytree import register_pytree_node
+except:
+    from torch.utils._pytree import _register_pytree_node as register_pytree_node
 
 from .tensor_utils import split_along_axis
 
@@ -503,7 +506,7 @@ class GridArrayTensor(Array):
         return torch.asarray(arrays).view(cls)
 
 
-pytree.register_pytree_node(
+register_pytree_node(
     GridArrayTensor,
     lambda tensor: (tensor.ravel().tolist(), tensor.shape),
     lambda shape, arrays: GridArrayTensor(torch.asarray(arrays).reshape(shape)),

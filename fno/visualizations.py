@@ -5,15 +5,14 @@ import plotly.io as pio
 
 import numpy as np
 import torch
+import torch.fft as fft
 import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 def plot_contour(z, 
-                    filename="vorticity", 
-                    suffix="svg",
-                    func=plt.imshow,
-                    **kwargs):
+                func=plt.imshow,
+                **kwargs):
     if isinstance(z, torch.Tensor):
         z = z.cpu().numpy()
     _, ax = plt.subplots(figsize=(3, 3))
@@ -87,7 +86,6 @@ def plot_contour_plotly(
             exponentformat = 'e',
         )
         layout_kwargs["width"] = 1.32 * layout_kwargs["height"]
-        # layout_kwargs['coloraxis_colorbar'] = dict(thickness=0.32*layout_kwargs['height'])
     else:
         contour_kwargs["showscale"] = False
 
@@ -110,5 +108,72 @@ def plot_contour_plotly(
         fig.update_layout(template="plotly_dark", **layout_kwargs)
     else:
         fig.update_layout(**layout_kwargs)
-
     return fig
+
+
+
+def get_enstrophy_spectrum(vorticity, h):
+    if isinstance(vorticity, np.ndarray):
+        vorticity = torch.from_numpy(vorticity)
+    n = vorticity.shape[0]
+    kx = fft.fftfreq(n, d=h)
+    ky = fft.fftfreq(n, d=h)
+    kx, ky = torch.meshgrid([kx, ky], indexing="ij")
+    kmax = n//2
+    kx = kx[..., : kmax + 1]
+    ky = ky[..., : kmax + 1]
+    k2 = (4*torch.pi**2)*(kx**2 + ky**2)
+    k2[0, 0] = 1.0
+
+    wh = fft.rfft2(vorticity)
+
+    tke = (0.5*wh*wh.conj()).real
+    kmod = torch.sqrt(k2)
+    k = torch.arange(1, kmax, dtype=torch.float64) # Nyquist limit for this grid
+    Ens = torch.zeros_like(k)
+    dk = (torch.max(k)-torch.min(k))/(2*n)
+    for i in range(len(k)):
+        Ens[i] += (tke[(kmod<k[i]+dk) & (kmod>=k[i]-dk)]).sum()
+
+    Ens = Ens/Ens.sum()
+    return Ens
+
+
+def plot_enstrophy_spectrum(fields:list,
+                            h=None, 
+                            slope=5,
+                            factor=None,
+                            cutoff=1e-15,
+                            labels=None,
+                            legend_loc="upper right",
+                            fontsize=15,
+                            subplot_kw={"figsize": (5, 5), "dpi": 100, "facecolor": "w"},
+                            **kwargs):
+    for k, field in enumerate(fields):
+        if isinstance(field, np.ndarray):
+            fields[k] = torch.from_numpy(field)
+    if labels is None:
+        labels = [f"Field {i}" for i in range(len(fields))]
+    n = fields[0].shape[0]
+    if h is None: h = 1 / n
+    kmax = n//2
+    k = torch.arange(1, kmax, dtype=torch.float64) # Nyquist limit for this grid
+    Es = [get_enstrophy_spectrum(field, h, cutoff) for field in fields]
+    if factor is None:
+        factor = Es[-1].quantile(0.8)/(k[-1] ** (-slope))
+        print(factor)
+    
+    fig, ax = plt.subplots(**subplot_kw)
+    for i, E in enumerate(Es):
+        if cutoff is not None:
+            E[E < cutoff] = np.nan
+        E[-n//4:] = np.nan
+        plt.loglog(k, E, label=f"{labels[i]}")
+
+    plt.loglog(k[:-n//4], (factor*k ** (-slope))[:-n//4], "b--", 
+               label=f"$O(k^{{{-slope:.3g}}})$",)
+    plt.grid(True, which="both", ls="--", linewidth=0.4)
+    plt.autoscale(enable=True, axis='x', tight=True)
+    plt.legend(fontsize=fontsize, loc=legend_loc)
+    ax.xaxis.set_tick_params(labelsize=fontsize)
+    ax.yaxis.set_tick_params(labelsize=fontsize)

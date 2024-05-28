@@ -24,14 +24,16 @@ The data are available at https://huggingface.co/datasets/scaomath/navier-stokes
 
 ## Examples
 - Demos of different simulation setups:
-  - [2D simulation with a pseudo-spectral solver](example_Kolmogrov2d_rk4_cn_forced_turbulence.ipynb)
+  - [2D simulation with a pseudo-spectral solver](/examples/Kolmogrov2d_rk4_cn_forced_turbulence.ipynb)
+- Demos of Spatiotemporal FNO's training and evaluation
+  - [Training of SFNO for only 10 epochs to match the inverse cascade](/examples/ex2_McWilliams2d_10ep.ipynb)
 
 ## Licenses
 The Apache 2.0 License in the root folder applies to the `torch-cfd` folder of the repo that is inherited from Google's original license file for `Jax-cfd`. The `fno` folder has the MIT license inherited from [NVIDIA's Neural Operator repo](https://github.com/neuraloperator/neuraloperator). Note: the license(s) in the subfolder takes precedence.
 
 ## Contributions
 PR welcome. Currently, the port of `torch-cfd` currently includes:
-- Pseudospectral methods for vorticity which use anti-aliasing filtering techniques for non-linear terms to maintain stability.
+- Pseudospectral method for vorticity which uses anti-aliasing filtering techniques for nonlinear terms to maintain stability.
 - Temporal discretization: Currently only RK4 temporal discretization using explicit time-stepping for advection and either implicit or explicit time-stepping for diffusion.
 - Boundary conditions: only periodic boundary conditions.
 

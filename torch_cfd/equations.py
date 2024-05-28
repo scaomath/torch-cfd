@@ -31,6 +31,13 @@ Grid = grids.Grid
 # ComplexDtype = Union[torch.complex64, torch.complex128] # this gives TypeError in 3.8.10
 
 
+def spectral_laplacian_2d(rfft_mesh):
+    kx, ky = rfft_mesh
+    # (2 * torch.pi * 1j)**2
+    lap = - 4 * (torch.pi)**2 * (abs(kx) ** 2 + abs(ky) ** 2)
+    lap[..., 0, 0] = 1
+    return lap
+
 def spectral_curl_2d(vhat, rfft_mesh):
     r"""
     Computes the 2D curl in the Fourier basis.
@@ -45,11 +52,17 @@ def spectral_grad_2d(vhat, rfft_mesh):
     kx, ky = rfft_mesh
     return 2j * torch.pi * kx * vhat, 2j * torch.pi * ky * vhat
 
-
 def spectral_rot_2d(vhat, rfft_mesh):
     vgradx, vgrady = spectral_grad_2d(vhat, rfft_mesh)
     return vgrady, -vgradx
 
+def brick_wall_filter_2d(grid: Grid):
+    """Implements the 2/3 rule."""
+    n, _ = grid.shape
+    filter_ = torch.zeros((n, n // 2 + 1))
+    filter_[: int(2 / 3 * n) // 2, : int(2 / 3 * (n // 2 + 1))] = 1
+    filter_[-int(2 / 3 * n) // 2 :, : int(2 / 3 * (n // 2 + 1))] = 1
+    return filter_
 
 def vorticity_to_velocity(
     grid: Grid, w_hat: Array, rfft_mesh: Optional[Tuple[Array, Array]] = None
@@ -75,10 +88,8 @@ def vorticity_to_velocity(
         https://doi.org/10.1016/j.compfluid.2003.06.003.
     """
     kx, ky = rfft_mesh if rfft_mesh is not None else grid.rfft_mesh()
-    two_pi_i = 2 * torch.pi * 1j
     assert kx.shape[-2:] == w_hat.shape[-2:]
-    laplace = two_pi_i**2 * (abs(kx) ** 2 + abs(ky) ** 2)
-    laplace[..., 0, 0] = 1
+    laplace = spectral_laplacian_2d((kx, ky))
     psi_hat = -1 / laplace * w_hat
     u_hat, v_hat = spectral_rot_2d(psi_hat, (kx, ky))
     return (u_hat, v_hat), psi_hat
@@ -120,31 +131,34 @@ class ImplicitExplicitODE(nn.Module):
     """Describes a set of ODEs with implicit & explicit terms.
 
     The equation is given by:
+      $\partial u/ \partial t = N(u) + Lu$
+      where L is linear, N(\cdot) is nonlinear.
 
-      $\partial x/ \partial t = explicit_terms(x) + implicit_terms(x)$
+    Then, the IMEX scheme in general is
+      $\partial u/ \partial t = explicit_terms(u) + implicit_terms(u)$
 
-    `explicit_terms(x)` includes terms that should use explicit time-stepping and
-    `implicit_terms(x)` includes terms that should be modeled implicitly.
+    `explicit_terms(u)` is for N(u) that should use explicit time-stepping
+    `implicit_terms(u)` is for Lu that uses an implicit solver.
 
     Typically the explicit terms are non-linear and the implicit terms are linear.
     This simplifies solves but isn't strictly necessary.
     """
 
-    def explicit_terms(self, *, x):
+    def explicit_terms(self, *, u):
         """Evaluates explicit terms in the ODE."""
         raise NotImplementedError
 
-    def implicit_terms(self, *, x):
+    def implicit_terms(self, *, u):
         """Evaluates implicit terms in the ODE."""
         raise NotImplementedError
 
     def implicit_solve(
         self,
         *,
-        x: Array,
+        u: Array,
         step_size: float,
     ):
-        """Solves `y - step_size * implicit_terms(y) = x` for y."""
+        """Solves `u - step_size * implicit_terms(u) = f` for u."""
         raise NotImplementedError
 
 
@@ -287,7 +301,7 @@ def low_storage_runge_kutta_crank_nicolson(
     return u
 
 
-def crank_nicolson_rk4(
+def rk4_crank_nicolson(
     u: Array,
     dt: float,
     equation: ImplicitExplicitODE,
@@ -340,7 +354,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         drag: float = 0.0,
         smooth: bool = True,
         forcing_fn: Optional[Callable] = None,
-        solver: Optional[Callable] = crank_nicolson_rk4,
+        solver: Optional[Callable] = rk4_crank_nicolson,
     ):
         super().__init__()
         self.viscosity = viscosity
@@ -357,19 +371,10 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         self.register_buffer("ky", ky)
         laplace = (torch.pi * 2j) ** 2 * (self.kx**2 + self.ky**2)
         self.register_buffer("laplace", laplace)
-        filter_ = self.brick_wall_filter_2d(self.grid)
+        filter_ = brick_wall_filter_2d(self.grid)
         linear_term = self.viscosity * self.laplace - self.drag
         self.register_buffer("linear_term", linear_term)
         self.register_buffer("filter", filter_)
-
-    @staticmethod
-    def brick_wall_filter_2d(grid: Grid):
-        """Implements the 2/3 rule."""
-        n, _ = grid.shape
-        filter_ = torch.zeros((n, n // 2 + 1))
-        filter_[: int(2 / 3 * n) // 2, : int(2 / 3 * (n // 2 + 1))] = 1
-        filter_[-int(2 / 3 * n) // 2 :, : int(2 / 3 * (n // 2 + 1))] = 1
-        return filter_
 
     def residual(
         self,
@@ -467,16 +472,16 @@ def get_trajectory(
     tqdm_iters = num_steps if TQDM_ITERS > num_steps else TQDM_ITERS
     update_iters = num_steps // tqdm_iters
     with tqdm(total=num_steps) as pbar:
-        for t in range(num_steps):
+        for t_step in range(num_steps):
             w, dwdt = equation.forward(w, dt=dt)
             w.requires_grad_(require_grad)
             dwdt.requires_grad_(require_grad)
 
-            if t % update_iters == 0:
+            if t_step % update_iters == 0:
                 pbar.set_description(pbar_desc)
                 pbar.update(update_iters)
 
-            if t % record_every_steps == 0:
+            if t_step % record_every_steps == 0:
                 _, psi = vorticity_to_velocity(equation.grid, w)
                 res = equation.residual(w, dwdt)
 
