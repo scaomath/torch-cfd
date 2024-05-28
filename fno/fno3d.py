@@ -4,9 +4,9 @@ https://github.com/neuraloperator/neuraloperator/blob/master/fourier_3d.py
 """
 
 import torch
+import torch.fft as fft
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.fft as fft
 
 
 class SpectralConv3d(nn.Module):
@@ -108,6 +108,7 @@ class SpectralConv3d(nn.Module):
         x = fft.irfftn(out_ft, s=(x.size(-3), x.size(-2), x.size(-1)))
         return x
 
+
 class MLP(nn.Module):
     def __init__(self, in_channels, out_channels, mid_channels, activation=True):
         super(MLP, self).__init__()
@@ -181,7 +182,10 @@ class FNO3d(nn.Module):
         )
 
         self.mlp = nn.ModuleList(
-            [MLP(self.width, self.width, self.width) for _ in range(num_spectral_layers)]
+            [
+                MLP(self.width, self.width, self.width)
+                for _ in range(num_spectral_layers)
+            ]
         )
 
         self.w = nn.ModuleList(
@@ -208,9 +212,9 @@ class FNO3d(nn.Module):
         # grid = self.grid[None, ...].expand(bsz, *grid_size).to(x.fdevice)
         # x = torch.cat((x, grid), dim=-1)
 
-        x = self.p(x) # (b,x,y,t,13) -> (b,x,y,t,c)
+        x = self.p(x)  # (b,x,y,t,13) -> (b,x,y,t,c)
 
-        x = x.permute(0, 4, 1, 2, 3) # (b,x,y,t,c) -> (b,c,x,y,t)
+        x = x.permute(0, 4, 1, 2, 3)  # (b,x,y,t,c) -> (b,c,x,y,t)
 
         x = F.pad(
             x,
@@ -218,18 +222,20 @@ class FNO3d(nn.Module):
             mode="circular",
         )  # pad the domain if input is non-periodic
 
-        for (conv, mlp, w, nonlinear) in zip(self.spectral_conv, self.mlp, self.w, self.activation):
-            x1 = conv(x) # (b,C,x,y,t)
-            x1 = mlp(x1) # conv3d (N, C_{in}, D, H, W) -> (N, C_{out}, D, H, W)
+        for conv, mlp, w, nonlinear in zip(
+            self.spectral_conv, self.mlp, self.w, self.activation
+        ):
+            x1 = conv(x)  # (b,C,x,y,t)
+            x1 = mlp(x1)  # conv3d (N, C_{in}, D, H, W) -> (N, C_{out}, D, H, W)
             x2 = w(x)
             x = x1 + x2
             x = nonlinear(x)
 
         if self.padding != 0:
             x = x[..., self.padding : -self.padding, self.padding : -self.padding, :]
-        x = self.q(x) # (b,C,x,y,t) -> (b,1,x,y,t)
+        x = self.q(x)  # (b,C,x,y,t) -> (b,1,x,y,t)
 
-        x = x.permute(0, 2, 3, 4, 1) # (b,1,x,y,t) -> (b,x,y,t,1)
+        x = x.permute(0, 2, 3, 4, 1)  # (b,1,x,y,t) -> (b,x,y,t,1)
         return x
 
     @staticmethod
@@ -237,7 +243,7 @@ class FNO3d(nn.Module):
         size_x, size_y, size_t = grid_size
         gridx = torch.linspace(0, 1, size_x)
         gridx = gridx.reshape(size_x, 1, 1, 1).repeat([1, size_y, size_t, 1])
-        gridy = torch.linspace(0, 1, size_y) 
+        gridy = torch.linspace(0, 1, size_y)
         gridy = gridy.reshape(1, size_y, 1, 1).repeat([size_x, 1, size_t, 1])
         gridt = torch.linspace(0, 1, size_t)
         gridt = gridt.reshape(1, 1, size_t, 1).repeat([size_x, size_y, 1, 1])
@@ -253,13 +259,16 @@ if __name__ == "__main__":
     torchinfo has not resolve the complex number problem
     """
     for layer in model.children():
-        if hasattr(layer, 'out_features'):
+        if hasattr(layer, "out_features"):
             print(layer.out_features)
     try:
         from torchinfo import summary
+
         summary(model, input_size=(5, 128, 128, 40, 13))
-        print("\n"*3)
+        print("\n" * 3)
         model_orig = FNO3d(modes, modes, modes_t, width)
-        summary(model_orig, input_size=(5, 64, 64, 40, 13)) # number of parameters is 6563417 which 
+        summary(
+            model_orig, input_size=(5, 64, 64, 40, 13)
+        )  # number of parameters is 6563417 which
     except ImportError as e:
         print(e)

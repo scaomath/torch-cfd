@@ -18,6 +18,8 @@ pip install torch-cfd
 ```
 If one wants to play with the neural operator part, it is recommended cloning this repo and playing it local by creating a venv using `requirements.txt`. Note: it is recommended using PyTorch version >=2.0.0 for the broadcasting semantics.
 
+## Data
+The data are available at https://huggingface.co/datasets/scaomath/navier-stokes-dataset 
 
 
 ## Examples

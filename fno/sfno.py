@@ -7,11 +7,13 @@
 
 # THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+from functools import partial
+
 import torch
 import torch.fft as fft
 import torch.nn as nn
 import torch.nn.functional as F
-from functools import partial
+
 
 class LayerNorm3d(nn.GroupNorm):
     """
@@ -48,6 +50,7 @@ class MLP(nn.Module):
         for block in [self.mlp1, self.activation, self.mlp2]:
             x = block(x)
         return x
+
 
 class PositionalEncoding(nn.Module):
     """
@@ -89,6 +92,7 @@ class PositionalEncoding(nn.Module):
             self.pe = pe
         return x + self.pe
 
+
 class LiftingOperator(nn.Module):
     def __init__(
         self, width, modes_x, modes_y, modes_t, latent_steps=10, norm="forward"
@@ -115,6 +119,7 @@ class LiftingOperator(nn.Module):
             x = block(x)
         return x
 
+
 class OutProjection(nn.Module):
     def __init__(
         self, width, modes_x, modes_y, modes_t, output_steps=None, norm="forward"
@@ -137,7 +142,7 @@ class OutProjection(nn.Module):
         x: (b, x, y, t_latent)
         x_res input (b, x, y, t_out) if out_steps is None
         """
-        x_out = self.channel_reduction(x) # (b, c, x, y, t) -> (b, 1, x, y, t)
+        x_out = self.channel_reduction(x)  # (b, c, x, y, t) -> (b, 1, x, y, t)
         x_res = x_res[..., -1:]  # (b, x, y, t) -> (b, x, y, 1)
         x = x_res + self.conv(x_out, out_steps=out_steps).squeeze()
         return x, x_out.squeeze()
@@ -235,11 +240,11 @@ class SFNO(nn.Module):
         width,
         num_spectral_layers: int = 4,
         fft_norm="forward",
-        activation:str='GELU',
-        padding:int=0,
-        channel_expansion:int=128,
-        latent_steps:int=10,
-        output_steps:int=None,
+        activation: str = "GELU",
+        padding: int = 0,
+        channel_expansion: int = 128,
+        latent_steps: int = 10,
+        output_steps: int = None,
         debug=False,
     ):
         super().__init__()
@@ -285,7 +290,9 @@ class SFNO(nn.Module):
         )
 
         act_func = getattr(nn, activation)
-        self.activations = nn.ModuleList([act_func() for _ in range(num_spectral_layers)])
+        self.activations = nn.ModuleList(
+            [act_func() for _ in range(num_spectral_layers)]
+        )
         self.q = OutProjection(
             width,
             modes_x,
@@ -298,12 +305,14 @@ class SFNO(nn.Module):
         self.debug = debug
 
     latent_tensors = {}
-    def add_latent_hook(self, layer_name:str=None):
+
+    def add_latent_hook(self, layer_name: str = None):
         def _get_latent_tensors(name):
             def hook(model, input, output):
                 self.latent_tensors[name] = output.detach()
+
             return hook
-        
+
         layer_name = "activations" if layer_name is None else layer_name
         blocks = getattr(self, layer_name)
 
@@ -312,7 +321,8 @@ class SFNO(nn.Module):
 
     def forward(self, x, out_steps=None):
         """
-
+        if out_steps is None, it will try to use self.out_steps
+        if self.out_steps is None, it will use the temporal dimension of the input x
         """
         if out_steps is None:
             out_steps = self.out_steps if self.out_steps is not None else x.size(-1)
@@ -346,17 +356,19 @@ if __name__ == "__main__":
     modes_t = 5
     width = 10
     bsz = 5
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    sizes = [(n, n, n_t) for (n, n_t) in zip([64, 128, 256] , [10, 20, 20])]
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    sizes = [(n, n, n_t) for (n, n_t) in zip([64, 128, 256], [10, 20, 20])]
     model = SFNO(modes, modes, modes_t, width).to(device)
     try:
         from torchinfo import summary
+
         """
         torchinfo has not resolve the complex number problem
         """
         summary(model, input_size=(bsz, *sizes[-1]))
     except:
         from utils import get_num_params
+
         print(get_num_params(model))
     del model
 
@@ -372,6 +384,3 @@ if __name__ == "__main__":
         for k, v in model.latent_tensors.items():
             print(k, list(v.shape))
         del model
-
-
-
