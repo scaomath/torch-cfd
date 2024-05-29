@@ -22,7 +22,7 @@ from .data import DATA_PATH
 class UnitGaussianNormalizer(nn.Module):
     def __init__(
         self,
-        eps=1e-5,
+        eps=1e-7,
         data: Union[torch.Tensor, np.ndarray] = None,
     ):
         super().__init__()
@@ -91,18 +91,16 @@ class UnitGaussianNormalizer(nn.Module):
     @staticmethod
     def _align_shapes(x, mean, std, **kwargs):
         """
-        x: (N, n, n, C) or (N, n, n)
+        x: (bsz, m, m, C) or (bsz, m, m) or (bsz, C, m, m)
+        mean: (n, n, C) or (n, n) or (C, n, n)
         """
+        # print(x.shape)
         _, *size = x.shape
-        h_x, w_x = size[0], size[1]
-        if h_x != mean.shape[0] or w_x != mean.shape[1]:
-            mean = mean.permute(2, 0, 1)
-            std = std.permute(2, 0, 1)
-            mean = F.interpolate(mean[None, ...], size=(h_x, w_x), **kwargs)
-            std = F.interpolate(std[None, ...], size=(h_x, w_x), **kwargs)
-            mean = mean.permute(0, 2, 3, 1).squeeze(0)
-            std = std.permute(0, 2, 3, 1).squeeze(0)
-        return mean, std
+        if len(size) != mean.ndim or any([s != m for s, m in zip(size, mean.shape)]):
+            mean = F.interpolate(mean[None, None, ...], size=size, **kwargs)
+            std = F.interpolate(std[None, None, ...], size=size, **kwargs)
+
+        return mean.squeeze(), std.squeeze()
 
 
 class SpatialGaussianNormalizer(UnitGaussianNormalizer):
