@@ -144,7 +144,9 @@ def plot_enstrophy_spectrum(fields:list,
                             slope=5,
                             factor=None,
                             cutoff=1e-15,
+                            plot_cutoff_factor=1/8,
                             labels=None,
+                            title=None,
                             legend_loc="upper right",
                             fontsize=15,
                             subplot_kw={"figsize": (5, 5), "dpi": 100, "facecolor": "w"},
@@ -158,23 +160,26 @@ def plot_enstrophy_spectrum(fields:list,
     if h is None: h = 1 / n
     kmax = n//2
     k = torch.arange(1, kmax, dtype=torch.float64) # Nyquist limit for this grid
-    Es = [get_enstrophy_spectrum(field, h, cutoff) for field in fields]
+    Es = [get_enstrophy_spectrum(field, h) for field in fields]
     if factor is None:
         factor = Es[-1].quantile(0.8)/(k[-1] ** (-slope))
-        print(factor)
+        # print(factor)
     
     fig, ax = plt.subplots(**subplot_kw)
+    plot_cutoff = int(n*plot_cutoff_factor)
     for i, E in enumerate(Es):
         if cutoff is not None:
             E[E < cutoff] = np.nan
-        E[-n//4:] = np.nan
+        E[-plot_cutoff:] = np.nan
         plt.loglog(k, E, label=f"{labels[i]}")
 
-    plt.loglog(k[:-n//4], (factor*k ** (-slope))[:-n//4], "b--", 
+    plt.loglog(k[:-plot_cutoff], (factor*k ** (-slope))[:-plot_cutoff], "b--", 
                label=f"$O(k^{{{-slope:.3g}}})$",)
     plt.grid(True, which="both", ls="--", linewidth=0.4)
     plt.autoscale(enable=True, axis='x', tight=True)
     plt.legend(fontsize=fontsize, loc=legend_loc)
+    plt.title(title, fontsize=fontsize)
+    plt.xlabel("Wavenumber", fontsize=fontsize)
     ax.xaxis.set_tick_params(labelsize=fontsize)
     ax.yaxis.set_tick_params(labelsize=fontsize)
 
@@ -214,6 +219,7 @@ def plot_contour_trajectory(field,
             yticks=None,
             size=3, 
             aspect=1,
+            interpolation="hermite",
             subplot_kws=dict(xticks=[], 
                         yticks=[],
                         ylabel= "",

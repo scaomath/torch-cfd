@@ -26,7 +26,6 @@ LOG_PATH = os.path.join(SRC_ROOT, "logs")
 for p in [DATA_PATH, LOG_PATH]:
     if not os.path.exists(p):
         os.makedirs(p)
-    print(p)
 
 feval = lambda s: eval("lambda x, y:" + s, globals())
 

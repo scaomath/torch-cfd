@@ -9,6 +9,9 @@
 		{
 			"path": "torch-cfd"
 		},
+		{
+			"path": "~/.local/lib/python3.11/site-packages",
+		}
 	],
 	"settings": {"jupyter.notebookFileRoot": "${workspaceFolder}"}
 }

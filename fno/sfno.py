@@ -70,7 +70,7 @@ class PositionalEncoding(nn.Module):
         assert num_channels % 2 == 0
         self.max_time_steps = max_time_steps
         self.time_exponential_scale = time_exponential_scale
-        self.register_buffer("pe", None)
+        self.pe = None
 
     def forward(self, x):
         if self.pe is None or self.pe.shape[-3:] != x.shape[-3:]:
@@ -78,7 +78,7 @@ class PositionalEncoding(nn.Module):
             gridx = torch.linspace(0, 1, nx)
             gridy = torch.linspace(0, 1, ny)
             gridt = torch.linspace(0, 1, self.max_time_steps)[:nt]
-            gridx, gridy, _gridt = torch.meshgrid(gridx, gridy, gridt)
+            gridx, gridy, _gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
             pe = [gridx, gridy, _gridt]
             for k in range(self.num_channels):
                 basis = torch.sin if k % 2 == 0 else torch.sin

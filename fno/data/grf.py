@@ -136,7 +136,6 @@ def main():
     parser.add_argument("--smoothing", action="store_true")
     args = parser.parse_args()
 
-    print(DATA_PATH, SRC_ROOT)
     grf = GRF2d(
         n=args.n,
         alpha=args.alpha,

@@ -26,7 +26,9 @@ The data are available at https://huggingface.co/datasets/scaomath/navier-stokes
 - Demos of different simulation setups:
   - [2D simulation with a pseudo-spectral solver](/examples/Kolmogrov2d_rk4_cn_forced_turbulence.ipynb)
 - Demos of Spatiotemporal FNO's training and evaluation
-  - [Training of SFNO for only 10 epochs to match the inverse cascade](/examples/ex2_McWilliams2d_10ep.ipynb)
+  - [Training of SFNO for only 15 epochs](/examples/ex2_SFNO_train.ipynb)
+  - [Training of SFNO for only 5 epoch to match the inverse cascade of Kolmogorov flow](/examples/ex2_SFNO_5ep_spectra.ipynb)
+  - [Baseline of FNO3d for fixed step size](/examples/ex2_FNO3d_train_normalized.ipynb)
 
 ## Licenses
 The Apache 2.0 License in the root folder applies to the `torch-cfd` folder of the repo that is inherited from Google's original license file for `Jax-cfd`. The `fno` folder has the MIT license inherited from [NVIDIA's Neural Operator repo](https://github.com/neuraloperator/neuraloperator). Note: the license(s) in the subfolder takes precedence.
