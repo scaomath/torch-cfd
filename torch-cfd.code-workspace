@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "fno"
+		},
+		{
+			"path": "torch-cfd"
+		},
+	],
+	"settings": {"jupyter.notebookFileRoot": "${workspaceFolder}"}
+}

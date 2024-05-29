@@ -1,4 +1,4 @@
-from utils import *
+from .utils import *
 import gc
 from os import PathLike
 from pathlib import Path
@@ -12,10 +12,11 @@ import scipy.io as sio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from data import DATA_PATH
 from einops import repeat
 from tensordict import TensorDict
 from torch.utils.data import Dataset
+
+from .data import DATA_PATH
 
 
 class UnitGaussianNormalizer(nn.Module):
@@ -85,7 +86,7 @@ class UnitGaussianNormalizer(nn.Module):
         return x
 
     def forward(self, *args, **kwargs):
-        return self._transform(*args, **kwargs)
+        return self.inverse_transform(*args, **kwargs)
 
     @staticmethod
     def _align_shapes(x, mean, std, **kwargs):
@@ -305,7 +306,6 @@ class NavierStokesDataset(Dataset):
                     N, n, n, T_in, device=self.device, dtype=self.dtype
                 )
                 self.u = torch.empty(N, n, n, T, device=self.device, dtype=self.dtype)
-            # self.data = defaultdict(lambda: torch.Tensor())  # release memory
             self.w0 = self.read_field("a", idx=self.idx)
             delattr(self, "data")
             gc.collect()
@@ -376,37 +376,30 @@ class BochnerDataset(Dataset):
         n_samples: int = 1024,
         train=True,
         fields=["vorticity", "stream"],
-        time_last: bool = True,
+        data_time_last: bool = False,
         steps=10,
+        out_steps=None,
         T_start=None,
-        normalizer: Union[bool, nn.ModuleDict] = None,
-        normalize_space_only: bool = False,
         dtype=torch.float32,
     ):
         """
         data: path to the dictionary
         fieldname: str, vorticity, stream, velocity
+        data has time dimension in dim = -3
 
-        if time_last = True
         input is (N, n, n, T_0:T_1)
         output is (N, n, n, T_1+1:T_2)
-
-        else
-        input is (N, T_0:T_1, n, n)
-        output is (N, T_1+1:T_2, n, n)
         """
         self.datapath = datapath
         self.n_samples = n_samples
         self.train = train
         self.fields = fields
         self.steps = steps
+        self.out_steps = out_steps if out_steps is not None else steps
         self.T_start = T_start
-        self.time_last = time_last
-        self.normalizer = normalizer
-        self.normalize_space_only = normalize_space_only
+        self.data_time_last = data_time_last
         self.dtype = dtype
         self._initialize()
-        self._normalize()
 
     def __len__(self):
         return self.n_samples
@@ -427,51 +420,30 @@ class BochnerDataset(Dataset):
         else:
             data = data[-self.n_samples :]
 
-        if self.time_last:
+        if not self.data_time_last:
             for key, val in data.items():
                 data[key] = val.permute(0, 2, 3, 1)
         self.data = data
-        self.data_transformed = data.clone()
-
-    def _normalize(self):
-        """
-        Normalize the data
-        """
-        fields = self.fields
-        if isinstance(self.normalizer, nn.ModuleDict) and not self.train:
-            normalizer = self.normalizer
-            for f in fields:
-                self.data_transformed[f] = normalizer[f](
-                    self.data[f], align_shapes=True
-                )
-        elif self.train and self.normalizer == True:
-            normalizer = nn.ModuleDict()
-            for f in fields:
-                if self.normalize_space_only:
-                    normalizer[f] = SpatialGaussianNormalizer()
-                else:
-                    normalizer[f] = UnitGaussianNormalizer()
-                self.data_transformed[f] = normalizer[f].fit_transform(self.data[f])
-            self.normalizer = normalizer
-        elif self.normalizer == False:
-            self.normalizer = nn.ModuleDict({f: nn.Identity() for f in fields})
+        self.data_input = data.clone()
+        # this is the transformed data
 
     def __getitem__(self, idx, start_idx=None):
         if start_idx is None and self.T_start is None:
-            start_idx = np.random.randint(0, self.total_steps - 2 * self.steps - 1)
+            start_idx = np.random.randint(
+                0, self.total_steps - (self.out_steps + self.steps + 1)
+            )
         elif self.T_start is not None:
             start_idx = self.T_start
         inp_slice = slice(start_idx, start_idx + self.steps)
-        out_slice = slice(start_idx + self.steps, start_idx + 2 * self.steps)
+        out_slice = slice(
+            start_idx + self.steps, start_idx + self.steps + self.out_steps
+        )
 
         inp = dict()
         out = dict()
         for field in self.fields:
-            inp[field] = self.data_transformed[field][idx, ..., inp_slice].to(
-                self.dtype
-            )
+            inp[field] = self.data_input[field][idx, ..., inp_slice].to(self.dtype)
             out[field] = self.data[field][idx, ..., out_slice].to(self.dtype)
-
         return inp, out
 
 
@@ -482,61 +454,105 @@ class BochnerDatasetFixed(BochnerDataset):
         n_samples: int = 1024,
         train=True,
         fields=["vorticity", "stream"],
-        time_last: bool = True,
-        T_start=None,
+        data_time_last: bool = False,
+        T_start=0,
         steps=10,
-        normalizer: Union[bool, nn.ModuleDict] = None,
+        out_steps=10,
+        inp_normalizer: Union[bool, nn.ModuleDict] = None,
         normalize_space_only: bool = False,
+        out_normalizer=True,
         dtype=torch.float32,
     ):
         """
-        BochnerDatasetFixed for the Bochner-space like dataset
-        but with fixed time steps
-        since this pipeline needs to addgrid to the data
+        BochnerDatasetFixed for the Bochner space-like dataset
+        but with fixed time steps used by FNO3d
+        since this pipeline needs
+        - add 3d grid to the data
+        - add the normalizer
         """
         super().__init__(
             datapath=datapath,
             n_samples=n_samples,
             train=train,
             fields=fields,
-            time_last=time_last,
+            data_time_last=data_time_last,
             T_start=T_start,
             steps=steps,
-            normalizer=normalizer,
-            normalize_space_only=normalize_space_only,
+            out_steps=out_steps,
             dtype=dtype,
         )
+        self.inp_normalizer = inp_normalizer
+        self.normalize_space_only = normalize_space_only
+        self.out_normalizer = out_normalizer
         self._initialize()
+        self._slicing_in_time()
         self._normalize()
         self._add_grid()
 
+    def _slicing_in_time(self):
+        """
+        slice the data in time
+        """
+        T_start = self.T_start
+        steps = self.steps
+        T = self.out_steps
+        data_input = self.data_input  # (N, n, n, T)
+        data_out = self.data  # (N, n, n, T)
+        for field in self.fields:
+            inp = data_input[field][..., T_start : T_start + steps]
+            self.data_input[field] = inp.permute(0, 3, 1, 2)  # (N, T, n, n)
+            self.data[field] = data_out[field][
+                ..., T_start + steps : T_start + steps + T
+            ]
+            # output is (N, n, n, T)
+
+    def normalize(self, data, normalizer):
+        """
+        Normalize the data
+        """
+        fields = self.fields
+        assert all([f in data.keys() for f in fields])
+        if self.train and normalizer == True:
+            normalizer = nn.ModuleDict()
+            for f in fields:
+                if self.normalize_space_only:
+                    normalizer[f] = SpatialGaussianNormalizer()
+                else:
+                    normalizer[f] = UnitGaussianNormalizer()
+                data[f] = normalizer[f].fit_transform(data[f])
+        elif isinstance(normalizer, nn.ModuleDict) and not self.train:
+            for f in fields:
+                data[f] = normalizer[f].transform(data[f], align_shapes=True)
+        elif normalizer == False:
+            normalizer = nn.ModuleDict({f: nn.Identity() for f in fields})
+        return data, normalizer
+
+    def _normalize(self):
+        self.data_input, self.inp_normalizer = self.normalize(
+            self.data_input, self.inp_normalizer
+        )
+        self.data, self.out_normalizer = self.normalize(self.data, self.out_normalizer)
+
     def _add_grid(self):
         """
-        preset a 3D PE (3, n, n, n_t)
+        preset a 3D PE (3, n, n, T)
         """
-        n, n, n_t = self.data[self.fields[0]].shape[1:]
+        n, n, n_t = self.data[self.fields[0]].shape[1:]  # output shape
+        # (*, n, n, T) T is already the sliced data
         gridx = torch.linspace(0, 1, n, dtype=self.dtype)
         gridy = torch.linspace(0, 1, n, dtype=self.dtype)
         gridt = torch.linspace(0, 1, n_t, dtype=self.dtype)
         gridx, gridy, gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
-        self.grid = torch.stack((gridx, gridy, gridt))
+        self.grid = torch.stack((gridx, gridy, gridt))  # (3, n, n, T)
 
-    def __getitem__(self, idx, start_idx=None):
-        if start_idx is None and self.T_start is None:
-            start_idx = np.random.randint(0, self.total_steps - 2 * self.steps - 1)
-        elif self.T_start is not None:
-            start_idx = self.T_start
-        inp_slice = slice(start_idx, start_idx + self.steps)
-        out_slice = slice(start_idx + self.steps, start_idx + 2 * self.steps)
-
+    def __getitem__(self, idx):
         inp = dict()
         out = dict()
         for field in self.fields:
-            _inp = self.data_transformed[field][idx, ..., inp_slice]
+            _inp = self.data_input[field][idx]
             dim_repeat = [1 for _ in range(_inp.ndim + 1)]
-            dim_repeat[0] = self.steps
-            _inp = _inp.unsqueeze(0).repeat(dim_repeat)
-            inp[field] = torch.cat((self.grid[..., inp_slice], _inp)).to(self.dtype)
-            out[field] = self.data[field][idx, ..., out_slice].to(self.dtype)
-
+            dim_repeat[-1] = self.out_steps
+            _inp = _inp.unsqueeze(-1).repeat(dim_repeat)
+            inp[field] = torch.cat((self.grid, _inp)).to(self.dtype)
+            out[field] = self.data[field][idx].to(self.dtype)
         return inp, out

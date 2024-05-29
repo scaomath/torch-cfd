@@ -168,28 +168,22 @@ class FNO3d(nn.Module):
         self.extra_mlp = extra_mlp
         self.channel_expansion = channel_expansion
 
-        self.p = nn.Linear(
-            input_channel + dim, self.width
-        )  # input channel is 13: the solution of the first 10 timesteps + 3 locations (u(1, x, y), ..., u(10, x, y),  x, y, t)
+        self.p = nn.Conv3d(input_channel + dim, self.width, 1)
+        # input channel is 13: the solution of the first 10 timesteps + 3 locations (u(1, x, y), ..., u(10, x, y),  x, y, t)
 
         self.spectral_conv = nn.ModuleList(
             [
-                SpectralConv3d(
-                    self.width, self.width, self.modes1, self.modes2, self.modes3
-                )
+                SpectralConv3d(width, width, modes1, modes2, modes3)
                 for _ in range(num_spectral_layers)
             ]
         )
 
         self.mlp = nn.ModuleList(
-            [
-                MLP(self.width, self.width, self.width)
-                for _ in range(num_spectral_layers)
-            ]
+            [MLP(width, width, width) for _ in range(num_spectral_layers)]
         )
 
         self.w = nn.ModuleList(
-            [nn.Conv3d(self.width, self.width, 1) for _ in range(num_spectral_layers)]
+            [nn.Conv3d(width, width, 1) for _ in range(num_spectral_layers)]
         )
 
         self.activation = nn.ModuleList(
@@ -197,9 +191,8 @@ class FNO3d(nn.Module):
         )
         self.activation.append(nn.GELU() if last_activation else nn.Identity())
 
-        self.q = MLP(
-            self.width, 1, self.channel_expansion, activation=last_activation
-        )  # output channel is 1: u(x, y)
+        self.q = MLP(self.width, 1, self.channel_expansion, activation=last_activation)
+        # output channel is 1: u(x, y)
         self.debug = debug
 
     def forward(self, x):
@@ -212,9 +205,7 @@ class FNO3d(nn.Module):
         # grid = self.grid[None, ...].expand(bsz, *grid_size).to(x.fdevice)
         # x = torch.cat((x, grid), dim=-1)
 
-        x = self.p(x)  # (b,x,y,t,13) -> (b,x,y,t,c)
-
-        x = x.permute(0, 4, 1, 2, 3)  # (b,x,y,t,c) -> (b,c,x,y,t)
+        x = self.p(x)  # (b,13,x,y,t) -> (b,c,x,y,t)
 
         x = F.pad(
             x,
@@ -233,21 +224,9 @@ class FNO3d(nn.Module):
 
         if self.padding != 0:
             x = x[..., self.padding : -self.padding, self.padding : -self.padding, :]
+
         x = self.q(x)  # (b,C,x,y,t) -> (b,1,x,y,t)
-
-        x = x.permute(0, 2, 3, 4, 1)  # (b,1,x,y,t) -> (b,x,y,t,1)
-        return x
-
-    @staticmethod
-    def get_grid(grid_size):
-        size_x, size_y, size_t = grid_size
-        gridx = torch.linspace(0, 1, size_x)
-        gridx = gridx.reshape(size_x, 1, 1, 1).repeat([1, size_y, size_t, 1])
-        gridy = torch.linspace(0, 1, size_y)
-        gridy = gridy.reshape(1, size_y, 1, 1).repeat([size_x, 1, size_t, 1])
-        gridt = torch.linspace(0, 1, size_t)
-        gridt = gridt.reshape(1, 1, size_t, 1).repeat([size_x, size_y, 1, 1])
-        return torch.cat((gridx, gridy, gridt), dim=-1)
+        return x.squeeze(1), None
 
 
 if __name__ == "__main__":
@@ -264,11 +243,11 @@ if __name__ == "__main__":
     try:
         from torchinfo import summary
 
-        summary(model, input_size=(5, 128, 128, 40, 13))
+        summary(model, input_size=(5, 13, 128, 128, 40))
         print("\n" * 3)
         model_orig = FNO3d(modes, modes, modes_t, width)
         summary(
-            model_orig, input_size=(5, 64, 64, 40, 13)
-        )  # number of parameters is 6563417 which
+            model_orig, input_size=(5, 13, 64, 64, 40)
+        )  # number of parameters is 6563417 which is not correct
     except ImportError as e:
         print(e)

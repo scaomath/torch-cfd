@@ -1,8 +1,8 @@
 import plotly.express as px
 import plotly.figure_factory as ff
 import plotly.graph_objects as go
-import plotly.io as pio
 
+import xarray
 import numpy as np
 import torch
 import torch.fft as fft
@@ -177,3 +177,50 @@ def plot_enstrophy_spectrum(fields:list,
     plt.legend(fontsize=fontsize, loc=legend_loc)
     ax.xaxis.set_tick_params(labelsize=fontsize)
     ax.yaxis.set_tick_params(labelsize=fontsize)
+
+
+def plot_contour_trajectory(field, 
+                            num_snapshots=5, 
+                            contourf=False,
+                            T_start=4.5,
+                            dt = 1e-1,
+                            **kwargs):
+    """
+    plot trajectory using xarray's imshow or contourf wrapper
+    """
+    field = field.detach().cpu().numpy()
+    *size, T = field.shape
+    grid = np.linspace(0, 1, size[0]+1)[:-1]
+    time = np.arange(T) * dt + T_start
+    coords = {
+        'x': grid,
+        'y': grid,
+        't':  time,
+    }
+    ds = xarray.DataArray(
+        field,
+        dims=["x", "y", "t"],
+        coords=coords
+    )
+    t_steps = T//num_snapshots
+    ds = ds.thin({"t": t_steps})
+    plot_func = ds.plot.contourf if contourf else ds.plot.imshow
+    plot_func(col='t', 
+            col_wrap=5, 
+            cmap=sns.cm.icefire, 
+            robust=True,
+            add_colorbar=True,
+            xticks=None,
+            yticks=None,
+            size=3, 
+            aspect=1,
+            subplot_kws=dict(xticks=[], 
+                        yticks=[],
+                        ylabel= "",
+                        xlabel= "",
+            ),
+            cbar_kwargs=dict(orientation="vertical",
+                          pad=0.01,
+                          aspect= 10
+        ),
+        **kwargs)

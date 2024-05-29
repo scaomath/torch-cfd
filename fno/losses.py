@@ -89,10 +89,6 @@ class L2Loss2d(_WeightedLoss):
         if self.noise > 0:
             targets = self._noise(targets, targets.size(-1), self.noise)
 
-        if self.debug:
-            print(f"u pred size: \t {preds.size()}")
-            print(f"u size: \t {targets.size()}")
-
         target_norm = targets.pow(2).sum(dim=(1, 2, 3)) + self.eps
 
         if weights is None and self.weighted:
@@ -118,10 +114,6 @@ class L2Loss2d(_WeightedLoss):
         if targets_grad is not None and self.gamma > 0:
             preds_grad = central_diff(preds)
             preds_grad = torch.cat(preds_grad, dim=-1)
-
-            if self.debug:
-                print(f"pred grad size: \t {preds_grad.size()}")
-                print(f"target grad size: \t {targets_grad.size()}")
 
             grad_diff = (K * (preds_grad - targets_grad)).pow(2)
             loss_prime = self.gamma * grad_diff.mean(dim=(1, 2, 3)) / targets_prime_norm
@@ -241,8 +233,6 @@ class SobolevLoss(_WeightedLoss):
         x: (bsz, n_grid, n_grid, T)
         y: (bsz, n_grid, n_grid, T)
         """
-        if self.debug:
-            print("\nDebug mode on")
 
         bsz = x.size(0)
         n = self.n_grid
@@ -263,11 +253,6 @@ class SobolevLoss(_WeightedLoss):
         else:
             y = torch.fft.fftn(y, dim=(1, 2), norm="ortho")
         y = y.reshape(bsz, n, n, -1)
-
-        if self.debug:
-            print(f"x size: {x.size()}")
-            print(f"y size: {y.size()}")
-            print(f"weight size: {weight.size()}")
 
         w = (weight) ** (self.norm_order / 2) if self.norm_order != 0 else weight
         # when order = 0, this is just L2 norm
@@ -290,11 +275,6 @@ class SobolevLoss(_WeightedLoss):
         loss = (
             (diff_freq**2).sum(dim=-1).sqrt()
         )  # (bsz,) = (int_0^T |x(t) - y(t)|^2 dt)^{1/2}
-        if self.debug:
-            print(f"y2_norms size: {y2_norms.size()}")
-            print(f"diff_freq size: {diff_freq.size()}")
-            print(f"loss size: {loss.size()}")
-            print(f"Times steps: {T}")
         y2_norms = y2_norms / n if self.mesh_weighted else y2_norms
         loss = loss / y2_norms
         loss = loss / math.sqrt(T) if self.time_average else loss

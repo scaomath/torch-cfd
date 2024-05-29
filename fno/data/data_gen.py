@@ -10,7 +10,8 @@ import torch
 import torch.fft as fft
 import torch.nn.functional as F
 import xarray
-from solvers import *
+from .solvers import *
+import os
 from datetime import datetime
 
 import matplotlib.pyplot as plt
@@ -18,7 +19,6 @@ import seaborn as sns
 from torch.linalg import norm
 from tqdm import tqdm
 
-import os
 current_path = os.path.dirname(os.path.abspath(__file__))
 SRC_ROOT = os.path.dirname(current_path)
 DATA_PATH = os.path.join(SRC_ROOT, "data")
@@ -460,7 +460,7 @@ def verify_trajectories(
         g = (
             w_data["vorticity"]
             .isel(time=slice(2, None))
-            .thin(time=T//5)
+            .thin(time=T // 5)
             .plot.imshow(
                 col="time",
                 col_wrap=5,
