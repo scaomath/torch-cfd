@@ -207,7 +207,7 @@ class SpectralConvS(nn.Module):
             nx,
             ny,
             nt // 2 + 1,
-            dtype=torch.cfloat,
+            dtype=x_ft.dtype,
             device=x.device,
         )
         slice_x = [slice(0, self.modes_x), slice(-self.modes_x, None)]
@@ -319,6 +319,13 @@ class SFNO(nn.Module):
         for k, block in enumerate(blocks):
             block.register_forward_hook(_get_latent_tensors(f"{layer_name}_{k}"))
 
+    def double(self):
+        for param in self.parameters():
+            if param.dtype == torch.float32:
+                param.data = param.data.to(torch.float64)
+            elif param.dtype == torch.complex64:
+                param.data = param.data.to(torch.complex128)
+
     def forward(self, x, out_steps=None):
         """
         if out_steps is None, it will try to use self.out_steps
@@ -327,13 +334,16 @@ class SFNO(nn.Module):
         if out_steps is None:
             out_steps = self.out_steps if self.out_steps is not None else x.size(-1)
         x_res = x  # save skip connection
-        x = self.p(x.unsqueeze(1))  # [b, 1, n, n, T] -> [b, H, n, n, T]
+        x = self.p(x.unsqueeze(1) )  # [b, 1, n, n, T] -> [b, H, n, n, T]
+
+        if self.debug:
+            print(f"in proj: {x.size()}")
 
         x = F.pad(
             x,
             [0, 0, self.padding, self.padding, self.padding, self.padding],
             mode="circular",
-        )
+        )  # pad the domain if input is non-periodic
 
         for conv, mlp, w, nonlinear in zip(
             self.spectral_conv, self.mlp, self.w, self.activations

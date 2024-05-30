@@ -4,7 +4,8 @@ This repository featuers two parts:
 - The first part is a native PyTorch port of [Google's Computational Fluid Dynamics package in Jax](https://github.com/google/jax-cfd). The main changes are documented in the `README.md` under the [`torch_cfd` directory](torch_cfd). Most significant changes in all routines include:
   - Routines that rely on the functional programming of Jax have been rewritten to be a more debugger-friendly PyTorch tensor-in-tensor-out style.
   - Functions and operators are in general implemented as `nn.Module` like a factory template.
-  - Extra fields computation and tracking are made easier, such as time derivatives and PDE residual $R(\boldsymbol{v}):=\boldsymbol{f}-\partial_t \boldsymbol{v}-(\boldsymbol{v}\cdot\nabla)\boldsymbol{v} + \nu \Delta \boldsymbol{v}$.
+  - Jax-cfd's `funcutils.trajectory` function supports to track only one field variable (vorticity or velocity), Extra fields computation and tracking are made easier, such as time derivatives and PDE residual $R(\boldsymbol{v}):=\boldsymbol{f}-\partial_t \boldsymbol{v}-(\boldsymbol{v}\cdot\nabla)\boldsymbol{v} + \nu \Delta \boldsymbol{v}$.
+  - All ops takes batch dimension of tensors into consideration, not a single trajectory.
 - Neural Operator-Assisted Navier-Stokes Equations solver.
   - The **Spatiotempoeral Fourier Neural Operator** (SFNO) that is a spacetime tensor-to-tensor learner (or trajectory-to-trajectory), inspiration drawn from the [3D FNO in Nvidia's Neural Operator repo](https://github.com/neuraloperator/neuraloperator).
   - Data generation for the meta-example of the isotropic turbulence with energy spectra matching the inverse cascade of Kolmogorov flow in a periodic box. Ref: McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow. *Journal of Fluid Mechanics*, 146, 21-43.
@@ -16,7 +17,7 @@ To install `torch-cfd`'s current release, simply do:
 ```bash
 pip install torch-cfd
 ```
-If one wants to play with the neural operator part, it is recommended cloning this repo and playing it local by creating a venv using `requirements.txt`. Note: it is recommended using PyTorch version >=2.0.0 for the broadcasting semantics.
+If one wants to play with the neural operator part, it is recommended to clone this repo and play it locally by creating a venv using `requirements.txt`. Note: using PyTorch version >=2.0.0 for the broadcasting semantics.
 
 ## Data
 The data are available at https://huggingface.co/datasets/scaomath/navier-stokes-dataset 
@@ -52,6 +53,6 @@ PR welcome. Currently, the port of `torch-cfd` currently includes:
 
 ## Acknowledgments
 The research of Brarda and Xi is supported by the National Science Foundation award DMS-2208412. 
-The work of  Li was performed under the auspices of
+The work of Li was performed under the auspices of
 the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DEAC52-07NA27344 and was supported by the LLNL-LDRD program under Project No. 24ERD033. Cao is greatful for the support from [Long Chen (UC Irvine)](https://github.com/lyc102/ifem) and 
 [Ludmil Zikatanov (Penn State)](https://github.com/HAZmathTeam/hazmath) over the years, and their efforts in open-sourcing scientific computing codes. Cao also appreciates the support from the National Science Foundation DMS-2309778, and the free A6000 credits at the SSE ML cluster from the University of Missouri.

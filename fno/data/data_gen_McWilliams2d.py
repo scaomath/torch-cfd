@@ -19,12 +19,6 @@ from torch_cfd.equations import *
 from torch_cfd.initial_conditions import *
 from torch_cfd.finite_differences import *
 from torch_cfd.forcings import *
-
-from collections import defaultdict
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-import xarray
 from tqdm import tqdm
 from .data_gen import *
 
@@ -79,10 +73,10 @@ def main(args):
     filename = args.filename
     if filename is None:
         filename = (
-            f"McWilliams2d{dtype_str}"
-            + f"_N{total_samples}_n{ns}"
-            + f"_v{viscosity:.0e}_T{T}.pt"
-        ).replace("e-0", "e-")
+            f"McWilliams2d{dtype_str}_{ns}x{ns}"
+            + f"_N{total_samples}_v{viscosity:.0e}"
+            + f"_T{num_snapshots}.pt".replace("e-0", "e-")
+        )
         args.filename = filename
     data_filepath = os.path.join(DATA_PATH, filename)
     if os.path.exists(data_filepath) and not force_rerun:
@@ -112,10 +106,10 @@ def main(args):
     ).to(device)
 
     for i, idx in enumerate(range(0, total_samples, batch_size)):
+        logger.info(f"Generate trajectory for {i+1}-th batch of {total_samples}")
         logger.info(
-            f"Generate trajectory for {i+1}-th batch of {total_samples}"
+            f"random state: {random_state + idx} to {random_state + idx + batch_size-1}"
         )
-        logger.info(f"random state: {random_state + idx} to {random_state + idx + batch_size-1}")
 
         vort_init = torch.stack(
             [
@@ -143,7 +137,10 @@ def main(args):
         )
 
         for field, value in result.items():
-            value = fft.irfft2(value).real.cpu().to(torch.float32)
+            value = fft.irfft2(value).real.cpu().to(dtype)
+            logger.info(
+                f"variable: {field} | shape: {value.shape} | dtype: {value.dtype}"
+            )
             if subsample > 1:
                 result[field] = F.interpolate(value, size=(ns, ns), mode="bilinear")
             else:
@@ -158,7 +155,9 @@ def main(args):
 
     pickle_to_pt(data_filepath)
 
-    verify_trajectories(data_filepath, dt=record_every_iters * dt, T_warmup=T_warmup)
+    verify_trajectories(
+        data_filepath, dt=record_every_iters * dt, T_warmup=T_warmup, n_samples=1
+    )
 
 
 if __name__ == "__main__":

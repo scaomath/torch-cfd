@@ -20,7 +20,7 @@ from typing import Callable, Dict, Optional, Tuple, Union
 import torch
 import torch.fft as fft
 import torch.nn as nn
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from . import grids
 
@@ -28,15 +28,15 @@ TQDM_ITERS = 500
 
 Array = torch.Tensor
 Grid = grids.Grid
-# ComplexDtype = Union[torch.complex64, torch.complex128] # this gives TypeError in 3.8.10
 
 
 def spectral_laplacian_2d(rfft_mesh):
     kx, ky = rfft_mesh
     # (2 * torch.pi * 1j)**2
-    lap = - 4 * (torch.pi)**2 * (abs(kx) ** 2 + abs(ky) ** 2)
+    lap = -4 * (torch.pi) ** 2 * (abs(kx) ** 2 + abs(ky) ** 2)
     lap[..., 0, 0] = 1
     return lap
+
 
 def spectral_curl_2d(vhat, rfft_mesh):
     r"""
@@ -52,9 +52,11 @@ def spectral_grad_2d(vhat, rfft_mesh):
     kx, ky = rfft_mesh
     return 2j * torch.pi * kx * vhat, 2j * torch.pi * ky * vhat
 
+
 def spectral_rot_2d(vhat, rfft_mesh):
     vgradx, vgrady = spectral_grad_2d(vhat, rfft_mesh)
     return vgrady, -vgradx
+
 
 def brick_wall_filter_2d(grid: Grid):
     """Implements the 2/3 rule."""
@@ -63,6 +65,7 @@ def brick_wall_filter_2d(grid: Grid):
     filter_[: int(2 / 3 * n) // 2, : int(2 / 3 * (n // 2 + 1))] = 1
     filter_[-int(2 / 3 * n) // 2 :, : int(2 / 3 * (n // 2 + 1))] = 1
     return filter_
+
 
 def vorticity_to_velocity(
     grid: Grid, w_hat: Array, rfft_mesh: Optional[Tuple[Array, Array]] = None
@@ -231,7 +234,7 @@ def rk2_crank_nicolson(
 
     Reference:
       Chandler, G. J. & Kerswell, R. R. Invariant recurrent solutions embedded in
-      a turbulent two-dimensional Kolmogorov flow. J. Fluid Mech. 722, 554–595
+      a turbulent two-dimensional Kolmogorov flow. J. Fluid Mech. 722, 554-595
       (2013). https://doi.org/10.1017/jfm.2013.122 (Section 3)
     """
     F = equation.explicit_terms
@@ -447,7 +450,6 @@ def get_trajectory(
     dt: float,
     num_steps: int = 1,
     record_every_steps: int = 1,
-    dtype=torch.complex128,
     pbar=False,
     pbar_desc="",
     require_grad=False,
@@ -486,7 +488,7 @@ def get_trajectory(
                 res = equation.residual(w, dwdt)
 
                 w_, dwdt_, psi, res = [
-                    var.detach().cpu().clone().to(dtype) for var in [w, dwdt, psi, res]
+                    var.detach().cpu().clone() for var in [w, dwdt, psi, res]
                 ]
 
                 w_all.append(w_)
