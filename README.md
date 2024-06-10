@@ -1,16 +1,23 @@
 # Neural Operator-Assisted Computational Fluid Dynamics in PyTorch
 
+## Summary 
+
 This repository features two parts:
-- The first part is a native PyTorch port of [Google's Computational Fluid Dynamics package in Jax](https://github.com/google/jax-cfd). The main changes are documented in the `README.md` under the [`torch_cfd` directory](/torch_cfd/). Most significant changes in all routines include:
+
+### Part I: a native PyTorch port of [Google's Computational Fluid Dynamics package in Jax](https://github.com/google/jax-cfd)
+The main changes are documented in the `README.md` under the [`torch_cfd` directory](/torch_cfd/). The most significant changes in all routines include:
   - Routines that rely on the functional programming of Jax have been rewritten to be a more debugger-friendly PyTorch tensor-in-tensor-out style.
   - Functions and operators are in general implemented as `nn.Module` like a factory template.
   - Jax-cfd's `funcutils.trajectory` function supports to track only one field variable (vorticity or velocity), Extra fields computation and tracking are made easier, such as time derivatives and PDE residual $R(\boldsymbol{v}):=\boldsymbol{f}-\partial_t \boldsymbol{v}-(\boldsymbol{v}\cdot\nabla)\boldsymbol{v} + \nu \Delta \boldsymbol{v}$.
-  - All ops takes batch dimension of tensors into consideration, not a single trajectory.
-- Neural Operator-Assisted Navier-Stokes Equations solver.
-  - The **Spatiotempoeral Fourier Neural Operator** (SFNO) that is a spacetime tensor-to-tensor learner (or trajectory-to-trajectory), available in the [`sfno` directory](/sfno/). Inspirations are drawn from the [3D FNO in Nvidia's Neural Operator repo](https://github.com/neuraloperator/neuraloperator).
-  - Data generation for the meta-example of the isotropic turbulence with energy spectra matching the inverse cascade of Kolmogorov flow in a periodic box. Ref: McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow. *Journal of Fluid Mechanics*, 146, 21-43.
+  - All ops take batch dimension of tensors `(b, *, n, n)` regardless of `*` dimension, which is similar to PyTorch behavior, not a single trajectory like Google's original Jax-CFD package.
+
+### Part II: Spectral-Refiner: Neural Operator-Assisted Navier-Stokes Equations solver.
+  - The **Spatiotempoeral Fourier Neural Operator** (SFNO) is a spacetime tensor-to-tensor learner (or trajectory-to-trajectory), available in the [`sfno` directory](/sfno/). We draw inspiration from the [3D FNO in Nvidia's Neural Operator repo](https://github.com/neuraloperator/neuraloperator), as well as Temam's book on functional analysis for NSE.
+  - Data generation for the meta-example of the isotropic turbulence in [McWilliams1984]. After the warmup phase, the energy spectra match the inverse cascade of Kolmogorov flow in a periodic box.
   - Pipelines for the *a posteriori* error estimation to fine-tune the SFNO to reach the scientific computing level of accuracy ($\le 10^{-6}$) in Bochner norm using FLOPs on par with a single evaluation, and only a fraction of FLOPs of a single `.backward()`.
-  - Example files will be added later after cleanup.
+  - [Examples](#examples) can be found below.
+
+[McWilliams1984]: McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow. *Journal of Fluid Mechanics*, 146, 21-43.
 
 ## Installation
 ```bash
