@@ -13,11 +13,10 @@ This repository featuers two parts:
   - Example files will be added later after cleanup.
 
 ## Installation
-To install `torch-cfd`'s current release, simply do:
 ```bash
-pip install torch-cfd
+pip install -r ./requirements.txt
 ```
-If one wants to play with the neural operator part, it is recommended to clone this repo and play it locally by creating a venv using `requirements.txt`. Note: using PyTorch version >=2.0.0 for the broadcasting semantics.
+Please install the required packages above or create a venv. Note: using PyTorch version >=2.0.0 for the broadcasting semantics.
 
 ## Data
 The data are available at https://www.kaggle.com/datasets/anonymousauthor25/sfno-dataset  
