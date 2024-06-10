@@ -6,8 +6,6 @@ import torch
 import torch.fft as fft
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm.auto import tqdm
-from .data_gen import DATA_PATH, SRC_ROOT
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -13,5 +13,9 @@
 			"path": "~/.local/lib/python3.11/site-packages",
 		}
 	],
-	"settings": {"jupyter.notebookFileRoot": "${workspaceFolder}"}
+	"settings": {"jupyter.notebookFileRoot": "${workspaceFolder}",
+				 "terminal.integrated.env.linux": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }}
+	
 }

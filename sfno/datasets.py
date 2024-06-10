@@ -16,10 +16,8 @@ from tensordict import TensorDict
 from torch.utils.data import Dataset
 try:
     from .utils import *
-    from .data import DATA_PATH
 except:
     from utils import *
-    from data import DATA_PATH
 
 
 class UnitGaussianNormalizer(nn.Module):
@@ -334,7 +332,8 @@ class NavierStokesDataset(Dataset):
                     os.path.splitext(os.path.basename(self.data_path))[0]
                     + f"_{flag}_normalizer.pt"
                 )
-                normalizer_path = Path(os.path.join(DATA_PATH, normalizer_path))
+                data_path = os.path.dirname(self.data_path)
+                normalizer_path = Path(os.path.join(data_path, normalizer_path))
                 torch.save(
                     {"mean": normalizer_.mean.cpu(), "std": normalizer_.std.cpu()},
                     normalizer_path,

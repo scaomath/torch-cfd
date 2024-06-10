@@ -31,7 +31,7 @@ Generate the isotropic turbulence in [1] with the inverse cascade frequency sign
 
 - Testing dataset for plotting the enstrohpy spectrum in the paper
 ```bash
->>> python data_gen_McWilliams2d.py --num-samples 16 --batch-size 8 --grid-size 256 --subsample 1 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double
+>>> python data_gen_McWilliams2d.py --num-samples 1152 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
 ```
 
 

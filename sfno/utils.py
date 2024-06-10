@@ -14,11 +14,8 @@ import torch.nn as nn
 
 
 def get_seed(s, printout=True, cudnn=True):
-    # rd.seed(s)
     os.environ["PYTHONHASHSEED"] = str(s)
     np.random.seed(s)
-    # pd.core.common.random_state(s)
-    # Torch
     torch.manual_seed(s)
     torch.cuda.manual_seed(s)
     if cudnn:

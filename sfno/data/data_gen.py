@@ -3,14 +3,14 @@ import logging
 import math
 import sys
 from collections import defaultdict
-from functools import partial
 
 import dill
 import torch
 import torch.fft as fft
 import torch.nn.functional as F
 import xarray
-from .solvers import *
+
+from data.solvers import *
 from torch_cfd.equations import *
 import os
 from datetime import datetime
@@ -19,14 +19,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.linalg import norm
 from tqdm import tqdm
-
-current_path = os.path.dirname(os.path.abspath(__file__))
-SRC_ROOT = os.path.dirname(current_path)
-DATA_PATH = os.path.join(SRC_ROOT, "data")
-LOG_PATH = os.path.join(SRC_ROOT, "logs")
-for p in [DATA_PATH, LOG_PATH]:
-    if not os.path.exists(p):
-        os.makedirs(p)
 
 feval = lambda s: eval("lambda x, y:" + s, globals())
 
@@ -103,8 +95,12 @@ def get_trajectory_rk4(
 
             if t_step % update_iters == 0:
                 res = equation.residual(w, dwdt)
-                res_norm = torch.linalg.norm(res).item()/w0.size(-1)
-                res_desc = f" unnormalized \|L(w) - f\|_2: {res_norm:.4e}"
+                res_ = fft.irfft2(res).real
+                w_ = fft.irfft2(w).real
+                res_norm = norm(res_).item()/w0.size(-1)
+                w_norm = norm(w_).item()/w0.size(-1)
+                res_desc = f" - ||L(w) - f||_2: {res_norm:.4e}"
+                res_desc += f" | vort norm {w_norm:.4e}"
                 desc = (
                     datetime.now().strftime("%d-%b-%Y %H:%M:%S")
                     + " - "
@@ -352,6 +348,12 @@ def get_args():
         help="domain is (0,d)x(0,d) (default: 1.0)",
     )
     parser.add_argument(
+        "--scale",
+        default=1,
+        metavar="scale",
+        help="spatial scaling of the domain (default: 1.0)",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=8,
@@ -543,13 +545,6 @@ def pickle_to_pt(data_path, save_path=None):
     https://stackoverflow.com/a/28745948/622119
     """
     save_path = data_path.replace(".pkl", ".pt") if save_path is None else save_path
-    # result = []
-    # with open(data_path, "rb") as f:
-    #     while True:
-    #         try:
-    #             result.append(dill.load(f))
-    #         except EOFError:
-    #             break
     result = load_pickle(data_path)
 
     data = defaultdict(list)

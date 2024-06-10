@@ -20,7 +20,8 @@ from torch_cfd.initial_conditions import *
 from torch_cfd.finite_differences import *
 from torch_cfd.forcings import *
 from tqdm import tqdm
-from .data_gen import *
+from data_gen import *
+from pipeline import LOG_PATH, DATA_PATH
 
 import logging
 

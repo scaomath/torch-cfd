@@ -8,7 +8,6 @@
 # THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import argparse
-import logging
 import os
 from datetime import datetime
 
@@ -19,11 +18,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from utils import *
-from data import *
 from pipeline import *
+from data import *
 from datasets import BochnerDataset
 from losses import SobolevLoss
-from visualizations import *
+import matplotlib.pyplot as plt
+from visualizations import plot_contour_trajectory
 from sfno import SFNO
 from torch.utils.data import DataLoader
 

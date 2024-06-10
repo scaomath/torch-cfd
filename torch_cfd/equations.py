@@ -387,7 +387,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         kx, ky = self.grid.rfft_mesh()
         self.register_buffer("kx", kx)
         self.register_buffer("ky", ky)
-        laplace = (torch.pi * 2j) ** 2 * (self.kx**2 + self.ky**2)
+        laplace = -4 * (torch.pi) ** 2 * (abs(self.kx) ** 2 + abs(self.ky) ** 2)
         self.register_buffer("laplace", laplace)
         filter_ = brick_wall_filter_2d(self.grid)
         linear_term = self.viscosity * self.laplace - self.drag
@@ -396,14 +396,10 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
 
     def residual(
         self,
-        vort_hat: Array,
-        vort_t_hat: Array,
+        vhat: Array,
+        vt_hat: Array,
     ):
-        residual = (
-            vort_t_hat
-            - self.explicit_terms(vort_hat)
-            - self.viscosity * self.implicit_terms(vort_hat)
-        )
+        residual = vt_hat - self.explicit_terms(vhat) - self.implicit_terms(vhat)
         return residual
 
     def _explicit_terms(self, vort_hat):

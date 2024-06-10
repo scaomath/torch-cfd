@@ -7,10 +7,9 @@ import torch
 import torch.fft as fft
 import torch.nn.functional as F
 
-from .grf import GRF2d
-from .solvers import *
-from .data_gen import *
-
+from grf import GRF2d
+from solvers import *
+from data_gen import *
 
 def main(args):
     args = args.parse_args()
@@ -29,7 +28,7 @@ def main(args):
     logger.info(" | ".join(f"{k}={v}" for k, v in all_args.items()))
 
     n_grid_max = 2048
-    n = args.grid_size  # 256
+    n = args.grid_size  # 26
     subsample = args.subsample  # 4
     ns = n // subsample
     diam = args.diam  # 1.0
