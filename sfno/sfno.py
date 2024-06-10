@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from torch.nn.init import constant_, xavier_uniform_
-from .data.solvers import *
+from data import *
 
 
 class LayerNorm3d(nn.GroupNorm):
@@ -221,6 +221,7 @@ class OutConv(nn.Module):
         diam: float = 1,
         n_grid=64,
         out_steps=None,
+        spatial_padding: int = 0,
         temporal_padding: bool = True,
         norm="backward",
     ) -> None:
@@ -245,9 +246,10 @@ class OutConv(nn.Module):
         self.n_grid = n_grid
         self.norm = norm
         self.delta = delta
+        self.spatial_padding = spatial_padding
         self.temporal_padding = temporal_padding
 
-    def forward(self, v, v_res, out_steps: int):
+    def forward(self, v, v_res, out_steps: int, **kwargs):
         """
         input v: (b, c, x, y, t_latent)
         input v_res: (b, x, y, t_in) or (b, 2, x, y, t_in)
@@ -257,12 +259,19 @@ class OutConv(nn.Module):
         """
         v_res = rearrange(v_res, "b x y t -> b 1 x y t")
         v = torch.cat([v_res[..., -2:], v], dim=-1)
-        v_res = v_res[..., -1:]
+        if self.spatial_padding > 0:
+            sp = self.spatial_padding
+            padding_kws = {"pad": (0, 0, sp, sp, sp, sp), "mode": "constant"}
+            v = F.pad(v, **padding_kws)
+
         v = self.conv(v, out_steps=out_steps + 2)
         # if dim reduction is 2, then this v is postprocessed to be divergence free
         # the squeeze(1) would do nothing in the case of velocity
-        v = v[..., -out_steps:]
-        v = v + v_res
+
+        if self.spatial_padding > 0:
+            v = v[..., sp:-sp, sp:-sp, :]
+
+        v = v_res[..., -1:] + v[..., -out_steps:]
         return v.squeeze(1)
 
 
@@ -532,6 +541,7 @@ class SFNO(nn.Module):
             n_grid=n_grid,
             out_steps=output_steps,
             dim_reduction=dim_reduction,
+            spatial_padding=spatial_padding,
             temporal_padding=temporal_padding,
             norm=fft_norm,
         )
@@ -574,12 +584,6 @@ class SFNO(nn.Module):
         v = rearrange(v, "b x y t -> b 1 x y t")
         v = self.p(v)  # [b, 1, n, n, T] -> [b, H, n, n, T]
 
-        if self.spatial_padding > 0:
-            sp = self.spatial_padding
-            padding_kws = {"pad": (0, 0, sp, sp, sp, sp), "mode": "circular"}
-            v = F.pad(v, **padding_kws)
-            # pad the domain if input is non-periodic
-
         for conv, mlp, w, nonlinear in zip(
             self.spectral_conv, self.mlp, self.w, self.activations
         ):
@@ -589,11 +593,8 @@ class SFNO(nn.Module):
             v = x1 + x2
             v = nonlinear(v)
 
-        if self.spatial_padding > 0:
-            v = v[..., sp:-sp, sp:-sp, :]
         v = self.r(v)  # (b, c, x, y, t) -> (b, 1, x, y, t)
         v = self.q(v, v_res, out_steps=out_steps)  # (b,1,x,y,t) -> (b,x,y,t)
-
         return v
 
 

@@ -194,7 +194,7 @@ class SobolevLoss(_WeightedLoss):
     def __init__(
         self,
         n_grid=256,
-        time_average=False,  # this is averaging in the Time dimension
+        time_average=True,  # this is averaging in the Time dimension
         reduction=True,  # this is averaging in the batch dimension
         mesh_weighted=True,  # if True, compute L2 otherwise ell2
         relative=False,
@@ -220,6 +220,14 @@ class SobolevLoss(_WeightedLoss):
         self._fftmesh(n_grid, diam, norm_order, freq_cutoff)
 
         self.debug = debug
+    
+    def __repr__(self):
+        if self.norm_order !=0:
+            rel_str = f"/||({self.alpha:.1f} - \Delta)^({self.norm_order}/2)u||" if self.relative else ""
+            return f"Sobolev loss in Fourier domain: ||({self.alpha:.1f} - \Delta)^({self.norm_order}/2) (u - v) ||"+rel_str
+        else:
+            rel_str = "/||u||" if self.relative else ""
+            return f"Sobolev loss in Fourier domain: ||u - v||"+rel_str
 
     def _fftmesh(self, n, diam, norm_order, freq_cutoff):
         self.n_grid = n

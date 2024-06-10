@@ -1,11 +1,14 @@
 ## TODO
 
 - [ ] add native PyTorch implementation for applying `torch.linalg` and `torch.fft` function directly on `GridArray`.
-- [ ] add discrete Helmholtz decomposition in both spatial and spectral domains.
-- [ ] adjust the function to act on `(batch, time, *spatial)` tensor, currently only `(*spatial)` is supported.
+- [x] add discrete Helmholtz decomposition in both spatial and spectral domains.
+- [x] adjust the function to act on `(batch, time, *spatial)` tensor, currently only `(*spatial)` is supported.
 - [x] add native vorticity computation, instead of taking FDM for pseudo-spectral.
 
 ## Changelog
+
+### 0.0.6
+- Minor changes in function names, added `sfno` directory and moved `get_trajectory_imex` and `get_trajectory_rk4` to the data generation folder.
 
 ### 0.0.5
 - added a batch dimension in solver matching. By default, the solver should work for input shapes `(batch, kx, ky)` or `(kx, ky)`. `get_trajectory()` output is either `(n_t, kx, ky)` or `(batch, n_t, kx, ky)`.

@@ -1,5 +1,8 @@
 import os
-from .utils import default
+try:
+    from .utils import default
+except:
+    from utils import default
 import numpy as np
 import torch
 import torch.nn as nn

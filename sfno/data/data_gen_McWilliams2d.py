@@ -26,17 +26,8 @@ import logging
 
 
 def main(args):
-    """
-    Generate the isotropic turbulence in [1]
 
-    [1]: McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow. Journal of Fluid Mechanics, 146, 21-43.
-
-    Training dataset:
-    >>> python3 data_gen_McWilliams2d.py --sample-size 1280 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double
-
-    Testing dataset for plotting the enstrohpy spectrum:
-    >>> python3 data_gen_McWilliams2d.py --sample-size 32 --batch-size 8 --grid-size 256 --subsample 1 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double
-    """
+    args = args.parse_args()
 
     current_time = datetime.now().strftime("%d_%b_%Y_%Hh%Mm")
     log_name = "".join(os.path.basename(__file__).split(".")[:-1])
@@ -44,7 +35,7 @@ def main(args):
     log_filename = os.path.join(LOG_PATH, f"{current_time}_{log_name}.log")
     logger = get_logger(log_filename)
 
-    total_samples = args.sample_size
+    total_samples = args.num_samples
     batch_size = args.batch_size  # 128
     n = args.grid_size  # 256
     viscosity = args.visc
