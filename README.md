@@ -20,7 +20,7 @@ pip install torch-cfd
 If one wants to play with the neural operator part, it is recommended to clone this repo and play it locally by creating a venv using `requirements.txt`. Note: using PyTorch version >=2.0.0 for the broadcasting semantics.
 
 ## Data
-The data are available at https://huggingface.co/datasets/scaomath/navier-stokes-dataset 
+The data are available at https://www.kaggle.com/datasets/anonymousauthor25/sfno-dataset  
 Data generation instructions are available in the [SFNO folder](/sfno/)
 
 
@@ -30,33 +30,10 @@ Data generation instructions are available in the [SFNO folder](/sfno/)
 - Demos of Spatiotemporal FNO's training and evaluation
   - [Training of SFNO for only 15 epochs for the isotropic turbulence example](/examples/ex2_SFNO_train.ipynb)
   - [Training of SFNO for only 10 epochs and reach `1e-2` level of relative error using the data in the FNO paper](/examples/ex2_SFNO_train_fnodata.ipynb)
-  - [Fine-tuning of SFNO on a $256\times 256$ grid for only 50 ADAM iterations to reach `1e-6` residual in the functional norm using FNO data](/examples/ex2_SFNO_finetune_fnodata.ipynb)
-  - [Fine-tuning of SFNO on the $256\times 256$ grid for the McWilliams 2d isotropic turbulence](/examples/ex2_SFNO_finetune_McWilliams2d.ipynb)
+  - [Fine-tuning of SFNO on a 256x256 grid for only 50 ADAM iterations to reach `1e-6` residual in the functional norm using FNO data](/examples/ex2_SFNO_finetune_fnodata.ipynb)
+  - [Fine-tuning of SFNO on the 256x256 grid for the McWilliams 2d isotropic turbulence](/examples/ex2_SFNO_finetune_McWilliams2d.ipynb)
   - [Training of SFNO for only 5 epoch to match the inverse cascade of Kolmogorov flow](/examples/ex2_SFNO_5ep_spectra.ipynb)
   - [Baseline of FNO3d for fixed step size that requires preloading a normalizer](/examples/ex2_FNO3d_train_normalized.ipynb)
 
 ## Licenses
 The Apache 2.0 License in the root folder applies to the `torch-cfd` folder of the repo that is inherited from Google's original license file for `Jax-cfd`. The `fno` folder has the MIT license inherited from [NVIDIA's Neural Operator repo](https://github.com/neuraloperator/neuraloperator). Note: the license(s) in the subfolder takes precedence.
-
-## Contributions
-PR welcome. Currently, the port of `torch-cfd` currently includes:
-- Pseudospectral method for vorticity which uses anti-aliasing filtering techniques for nonlinear terms to maintain stability.
-- Temporal discretization: Currently only RK4 temporal discretization using explicit time-stepping for advection and either implicit or explicit time-stepping for diffusion.
-- Boundary conditions: only periodic boundary conditions.
-
-## Reference
-```bibtex
-@article{2024SpectralRefiner,
-  title={Spectral-Refiner: Fine-Tuning of Accurate Spatiotemporal Neural Operator for Turbulent Flows},
-  author={Shuhao Cao and Francesco Brarda and Ruipeng Li and Yuanzhe Xi},
-  journal={arXiv preprint arXiv:2405.17211},
-  year={2024},
-  primaryClass={cs.LG}
-}
-```
-
-## Acknowledgments
-The research of Brarda and Xi is supported by the National Science Foundation award DMS-2208412. 
-The work of Li was performed under the auspices of
-the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DEAC52-07NA27344 and was supported by the LLNL-LDRD program under Project No. 24ERD033. Cao is greatful for the support from [Long Chen (UC Irvine)](https://github.com/lyc102/ifem) and 
-[Ludmil Zikatanov (Penn State)](https://github.com/HAZmathTeam/hazmath) over the years, and their efforts in open-sourcing scientific computing codes. Cao also appreciates the support from the National Science Foundation DMS-2309778, and the free A6000 credits at the SSE ML cluster from the University of Missouri.
