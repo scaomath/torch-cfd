@@ -25,6 +25,7 @@ Data generation instructions are available in the [SFNO folder](/sfno/)
 
 
 ## Examples
+Please check the example folder on the left panel. Somehow the example notebook links are broken after anonymization.
 - Demos of different simulation setups:
   - [2D simulation with a pseudo-spectral solver](/examples/Kolmogrov2d_rk4_cn_forced_turbulence.ipynb)
 - Demos of Spatiotemporal FNO's training and evaluation
