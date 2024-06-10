@@ -425,16 +425,17 @@ class BochnerDataset(Dataset):
         self.data_input = data.clone()
         # this is the transformed data
 
-    def __getitem__(self, idx, start_idx=None):
-        if start_idx is None and self.T_start is None:
-            start_idx = np.random.randint(
-                0, self.total_steps - (self.out_steps + self.steps + 1)
-            )
-        elif self.T_start is not None:
-            start_idx = self.T_start
-        inp_slice = slice(start_idx, start_idx + self.steps)
+    def __getitem__(self, idx, start_steps=None):
+        if start_steps is None:
+            if self.T_start is None:
+                start_steps = np.random.randint(
+                    0, self.total_steps - (self.out_steps + self.steps + 1)
+                )
+            else:
+                start_steps = self.T_start
+        inp_slice = slice(start_steps, start_steps + self.steps)
         out_slice = slice(
-            start_idx + self.steps, start_idx + self.steps + self.out_steps
+            start_steps + self.steps, start_steps + self.steps + self.out_steps
         )
 
         inp = dict()
@@ -442,6 +443,10 @@ class BochnerDataset(Dataset):
         for field in self.fields:
             inp[field] = self.data_input[field][idx, ..., inp_slice].to(self.dtype)
             out[field] = self.data[field][idx, ..., out_slice].to(self.dtype)
+        inp["time_steps"] = torch.arange(start_steps, start_steps + self.steps)
+        out["time_steps"] = torch.arange(
+            start_steps + self.steps, start_steps + self.steps + self.out_steps
+        )
         return inp, out
 
 

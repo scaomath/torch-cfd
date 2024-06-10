@@ -3,8 +3,6 @@ from .utils import default
 import numpy as np
 import torch
 import torch.nn as nn
-
-# from sklearn.metrics import roc_auc_score
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -37,8 +35,7 @@ def train_batch_ns(
     optimizer.zero_grad()
     a = data[0][fname].to(device)
     u = data[1][fname].to(device)
-    out, _ = model(a)
-
+    out = model(a)
     if normalizer is not None:
         out = normalizer[fname].inverse_transform(out)
         u = normalizer[fname].inverse_transform(u)
@@ -53,22 +50,36 @@ def train_batch_ns(
     return loss
 
 
-def eval_epoch_ns(model, metric_func, valid_loader, device, fname='vorticity', normalizer=None):
+def eval_epoch_ns(model, metric_func, valid_loader, device, 
+                  fname='vorticity', 
+                  out_steps=None,
+                  normalizer=None,
+                  return_output=False):
     model.eval()
     metric_vals = []
+    preds = []
+    targets = []
 
     with torch.no_grad():
         for _, data in enumerate(valid_loader):
             a = data[0][fname].to(device)
             u = data[1][fname].to(device)
-            out, _ = model(a)
+            out = model(a, out_steps=out_steps)
 
             if normalizer is not None:
                 out = normalizer[fname].inverse_transform(out)
                 u = normalizer[fname].inverse_transform(u)
             
+            if return_output:
+                preds.append(out.cpu())
+                targets.append(u.cpu())
+
             metric_val = metric_func(out, u)
-
             metric_vals.append(metric_val.item())
+    
+    metric = np.mean(np.asarray(metric_vals), axis=0)
 
-    return np.mean(np.asarray(metric_vals), axis=0)
+    if return_output:
+        return metric, torch.cat(preds), torch.cat(targets)
+    else:
+        return metric

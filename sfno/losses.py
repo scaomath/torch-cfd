@@ -198,60 +198,71 @@ class SobolevLoss(_WeightedLoss):
         reduction=True,  # this is averaging in the batch dimension
         mesh_weighted=True,  # if True, compute L2 otherwise ell2
         relative=False,
-        time_last=True,
-        freq_cutoff=None,
+        inp_time_last=True,
+        freq_cutoff:int=None, # max frequency cutoff
         norm_order: float = -1,  # this now can be fractional
+        alpha: float=0.1,
+        fft_norm="backward",
         diam=1,
         debug=False,
     ):
         super().__init__()
-        self.n_grid = n_grid
-        k_x = fft.fftfreq(n_grid, d=diam / n_grid)
-        k_y = fft.fftfreq(n_grid, d=diam / n_grid)
-        k_x, k_y = torch.meshgrid([k_x, k_y], indexing="ij")
-        k_x, k_y = [rearrange(z, "x y -> 1 x y 1") for z in (k_x, k_y)]
-        if freq_cutoff is not None:
-            k_x, k_y = [
-                (torch.abs(z) * (torch.abs(z) < freq_cutoff)) * z for z in (k_x, k_y)
-            ]
-        self.register_buffer("k_x", k_x)
-        self.register_buffer("k_y", k_y)
-        weight = 4 * (torch.pi) ** 2 * (self.k_x**2 + self.k_y**2)
-        weight[:, 0, 0, :] = 1.0
-        self.register_buffer("weight", weight)
+        
 
         self.relative = relative
         self.time_average = time_average
         self.reduction = reduction
         self.mesh_weighted = mesh_weighted
         self.norm_order = norm_order
-        self.time_last = time_last
+        self.alpha = alpha
+        self.fft_norm = fft_norm
+        self.inp_time_last = inp_time_last
+        self._fftmesh(n_grid, diam, norm_order, freq_cutoff)
+
         self.debug = debug
+
+    def _fftmesh(self, n, diam, norm_order, freq_cutoff):
+        self.n_grid = n
+        kx = fft.fftfreq(n, d=diam / n)
+        ky = fft.fftfreq(n, d=diam / n)
+        kx, ky = torch.meshgrid([kx, ky], indexing="ij")
+        kx, ky = [rearrange(z, "x y -> 1 x y 1") for z in (kx, ky)]
+        if freq_cutoff is None: 
+            freq_cutoff = n//2+1
+        freq_cutoff /= diam
+        cutoff_val = torch.inf if norm_order < 0 else 0
+        kx, ky = [z.clone().masked_fill(z.abs() > freq_cutoff, cutoff_val) for z in (kx, ky)]
+        weight = self.alpha + 4 * (torch.pi) ** 2 * (kx**2 + ky**2)
+        # weight[:, 0, 0, :] = 1.0
+        self.register_buffer("kx", kx)
+        self.register_buffer("ky", ky)
+        self.register_buffer("weight", weight)
 
     def forward(self, x, y=None):
         """
         x: (bsz, n_grid, n_grid, T)
         y: (bsz, n_grid, n_grid, T)
         """
+        fft_kws = {"dim": (1, 2), 
+                   "norm": self.fft_norm}
 
-        bsz = x.size(0)
+        bsz, *_, nt = x.size()
         n = self.n_grid
 
-        if not self.time_last:
+        if not self.inp_time_last:
             x = rearrange(x, "b t x y -> b x y t")
             if y is not None:
                 y = rearrange(y, "b t x y -> b x y t")
 
-        x = torch.fft.fftn(x, dim=(1, 2), norm="ortho")
+        x = torch.fft.fftn(x, **fft_kws)
         x = x.reshape(bsz, n, n, -1)
-        T = x.size(-1)
         weight = self.weight
         weight = torch.sqrt(weight).to(x.device)
 
         if y is None:
             y = torch.zeros_like(x, device=x.device)
         else:
-            y = torch.fft.fftn(y, dim=(1, 2), norm="ortho")
+            y = torch.fft.fftn(y, **fft_kws)
         y = y.reshape(bsz, n, n, -1)
 
         w = (weight) ** (self.norm_order / 2) if self.norm_order != 0 else weight
@@ -262,7 +273,6 @@ class SobolevLoss(_WeightedLoss):
         # when order = -2, this is H^-2 norm = \|(inv Lap) u\|
 
         x, y = [z * w for z in (x, y)]
-
         diff_freq = torch.linalg.norm(x - y, dim=(1, 2))  # (bsz, T)
         if self.relative:
             y2_norms = torch.linalg.norm(y, dim=(1, 2))  # (bsz, T)
@@ -275,9 +285,10 @@ class SobolevLoss(_WeightedLoss):
         loss = (
             (diff_freq**2).sum(dim=-1).sqrt()
         )  # (bsz,) = (int_0^T |x(t) - y(t)|^2 dt)^{1/2}
+
         y2_norms = y2_norms / n if self.mesh_weighted else y2_norms
         loss = loss / y2_norms
-        loss = loss / math.sqrt(T) if self.time_average else loss
+        loss = loss / math.sqrt(nt) if self.time_average else loss
         loss = loss.mean(0) if self.reduction else loss.sum(0)
         loss = loss / n if self.mesh_weighted else loss
         return loss
