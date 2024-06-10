@@ -322,7 +322,14 @@ def get_trajectory_imex_crank_nicolson(
 
 def get_args():
     parser = argparse.ArgumentParser(
-        description="Data generation for 2D NSE with FNO right-hand side"
+        description="Meta parameters for generating Navier-Stokes data and train"
+    )
+    parser.add_argument(
+        "--example",
+        type=str,
+        default=None,
+        metavar="example name",
+        help="data name (default: None)",
     )
     parser.add_argument(
         "--grid-size",
@@ -352,11 +359,11 @@ def get_args():
         help="batch size for data generation (default: 8)",
     )
     parser.add_argument(
-        "--sample-size",
+        "--num-samples",
         type=int,
         default=1200,
         metavar="N",
-        help="sample size for data generation (default: 1200)",
+        help="number of samples for data generation (default: 1200)",
     )
     parser.add_argument(
         "--visc",
@@ -509,7 +516,7 @@ def get_args():
         help="random seed (default: 1127825)",
     )
 
-    return parser.parse_args()
+    return parser
 
 
 def save_pickle(data, save_path, append=True):

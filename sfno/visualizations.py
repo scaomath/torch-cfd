@@ -193,9 +193,11 @@ def plot_enstrophy_spectrum(
 def plot_contour_trajectory(
     field,
     num_snapshots=5,
+    col_wrap=5,
     contourf=False,
     T_start=4.5,
     dt=1e-1,
+    title=None,
     cb_kws=dict(orientation="vertical", pad=0.01, aspect=10),
     subplot_kws=dict(
         xticks=[],
@@ -203,17 +205,7 @@ def plot_contour_trajectory(
         ylabel="",
         xlabel="",
     ),
-    plot_kws=dict(
-        col_wrap=5,
-        cmap=sns.cm.icefire,
-        robust=True,
-        add_colorbar=True,
-        xticks=None,
-        yticks=None,
-        size=3,
-        aspect=1,
-    ),
-    **kwargs,
+    **plot_kws,
 ):
     """
     plot trajectory using xarray's imshow or contourf wrapper
@@ -229,11 +221,32 @@ def plot_contour_trajectory(
     }
     ds = xarray.DataArray(field, dims=["x", "y", "t"], coords=coords)
     t_steps = T // num_snapshots
-    ds = ds.thin({"t": t_steps})
+    T_rem = T % num_snapshots
+    ds = ds.isel(t=slice(T_rem, None)).thin({"t": t_steps})
     plot_func = ds.plot.contourf if contourf else ds.plot.imshow
-    plot_func(
+
+    # fig = plt.figure()
+    _plot_kws = dict(
+        col_wrap=col_wrap,
+        cmap=sns.cm.icefire,
+        interpolation="hermite",
+        robust=True,
+        add_colorbar=True,
+        xticks=None,
+        yticks=None,
+        size=3,
+        aspect=1,
+    )
+    _plot_kws.update(plot_kws)
+
+    im = plot_func(
         col="t",
         subplot_kws=subplot_kws,
         cbar_kwargs=cb_kws,
-        **plot_kws,
+        **_plot_kws,
     )
+    if title is not None:
+        im.fig.suptitle(title, y=0.05)
+    # plt.show()
+
+    return im

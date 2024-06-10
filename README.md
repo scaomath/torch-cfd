@@ -1,6 +1,6 @@
 # Neural Operator-Assisted Computational Fluid Dynamics in PyTorch
 
-This repository featuers two parts:
+This repository features two parts:
 - The first part is a native PyTorch port of [Google's Computational Fluid Dynamics package in Jax](https://github.com/google/jax-cfd). The main changes are documented in the `README.md` under the [`torch_cfd` directory](/torch_cfd/). Most significant changes in all routines include:
   - Routines that rely on the functional programming of Jax have been rewritten to be a more debugger-friendly PyTorch tensor-in-tensor-out style.
   - Functions and operators are in general implemented as `nn.Module` like a factory template.
@@ -29,9 +29,9 @@ Please check the example folder on the left panel. Somehow the example notebook 
   - [2D simulation with a pseudo-spectral solver](/examples/Kolmogrov2d_rk4_cn_forced_turbulence.ipynb)
 - Demos of Spatiotemporal FNO's training and evaluation
   - [Training of SFNO for only 15 epochs for the isotropic turbulence example](/examples/ex2_SFNO_train.ipynb)
-  - [Training of SFNO for only 10 epochs and reach `1e-2` level of relative error using the data in the FNO paper](/examples/ex2_SFNO_train_fnodata.ipynb)
-  - [Fine-tuning of SFNO on a 256x256 grid for only 50 ADAM iterations to reach `1e-6` residual in the functional norm using FNO data](/examples/ex2_SFNO_finetune_fnodata.ipynb)
-  - [Fine-tuning of SFNO on the 256x256 grid for the McWilliams 2d isotropic turbulence](/examples/ex2_SFNO_finetune_McWilliams2d.ipynb)
+  - [Training of SFNO for only ***10*** epochs with 1k samples and reach `1e-2` level of relative error](/examples/ex2_SFNO_train_fnodata.ipynb) using the data in the FNO paper, which to our best knowledge no operator learner can do this in 500 epochs in the small data regime.
+  - [Fine-tuning of SFNO on a `256x256` grid for only 50 ADAM iterations to reach `1e-6` residual in the functional norm using FNO data](/examples/ex2_SFNO_finetune_fnodata.ipynb)
+  - [Fine-tuning of SFNO on the `256x256` grid for the McWilliams 2d isotropic turbulence](/examples/ex2_SFNO_finetune_McWilliams2d.ipynb)
   - [Training of SFNO for only 5 epoch to match the inverse cascade of Kolmogorov flow](/examples/ex2_SFNO_5ep_spectra.ipynb)
   - [Baseline of FNO3d for fixed step size that requires preloading a normalizer](/examples/ex2_FNO3d_train_normalized.ipynb)
 

@@ -217,8 +217,16 @@ def check_nan(tensor, tensor_name=""):
         tensor = tensor[~torch.isnan(tensor)]
         raise ValueError(f"{tensor_name} has nan with norm {torch.linalg.norm(tensor)}")
 
+def get_core_optimizer(name: str):
+    """
+    ASGD Adadelta Adagrad Adam AdamW Adamax LBFGS NAdam Optimizer RAdam RMSprop Rprop SGD
+    """
+    import torch.optim as optim
+    return getattr(optim, name)
+
 if __name__ == "__main__":
     get_seed(42)
+else:
     with timer(f"Loading modules for visualization", compact=True):
         try:
             import plotly.express as px

@@ -1,4 +1,3 @@
-from .utils import *
 import gc
 from os import PathLike
 from pathlib import Path
@@ -15,8 +14,12 @@ import torch.nn.functional as F
 from einops import repeat
 from tensordict import TensorDict
 from torch.utils.data import Dataset
-
-from .data import DATA_PATH
+try:
+    from .utils import *
+    from .data import DATA_PATH
+except:
+    from utils import *
+    from data import DATA_PATH
 
 
 class UnitGaussianNormalizer(nn.Module):
