@@ -7,7 +7,7 @@ This repository featuers two parts:
   - Jax-cfd's `funcutils.trajectory` function supports to track only one field variable (vorticity or velocity), Extra fields computation and tracking are made easier, such as time derivatives and PDE residual $R(\boldsymbol{v}):=\boldsymbol{f}-\partial_t \boldsymbol{v}-(\boldsymbol{v}\cdot\nabla)\boldsymbol{v} + \nu \Delta \boldsymbol{v}$.
   - All ops takes batch dimension of tensors into consideration, not a single trajectory.
 - Neural Operator-Assisted Navier-Stokes Equations solver.
-  - The **Spatiotempoeral Fourier Neural Operator** (SFNO) that is a spacetime tensor-to-tensor learner (or trajectory-to-trajectory), inspiration drawn from the [3D FNO in Nvidia's Neural Operator repo](https://github.com/neuraloperator/neuraloperator).
+  - The **Spatiotempoeral Fourier Neural Operator** (SFNO) that is a spacetime tensor-to-tensor learner (or trajectory-to-trajectory), available in the [`sfno` directory](sfno/). Inspirations are drawn from the [3D FNO in Nvidia's Neural Operator repo](https://github.com/neuraloperator/neuraloperator).
   - Data generation for the meta-example of the isotropic turbulence with energy spectra matching the inverse cascade of Kolmogorov flow in a periodic box. Ref: McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow. *Journal of Fluid Mechanics*, 146, 21-43.
   - Pipelines for the *a posteriori* error estimation to fine-tune the SFNO to reach the scientific computing level of accuracy ($\le 10^{-6}$) in Bochner norm using FLOPs on par with a single evaluation, and only a fraction of FLOPs of a single `.backward()`.
   - Example files will be added later after cleanup.
@@ -21,6 +21,7 @@ If one wants to play with the neural operator part, it is recommended to clone t
 
 ## Data
 The data are available at https://huggingface.co/datasets/scaomath/navier-stokes-dataset 
+Data generation instructions are available in the [SFNO folder](/sfno/)
 
 
 ## Examples

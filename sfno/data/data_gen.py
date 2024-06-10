@@ -11,6 +11,7 @@ import torch.fft as fft
 import torch.nn.functional as F
 import xarray
 from .solvers import *
+from torch_cfd.equations import *
 import os
 from datetime import datetime
 
@@ -28,6 +29,8 @@ for p in [DATA_PATH, LOG_PATH]:
         os.makedirs(p)
 
 feval = lambda s: eval("lambda x, y:" + s, globals())
+
+TQDM_ITERS = 200
 
 
 class TqdmLoggingHandler(logging.Handler):
@@ -57,16 +60,95 @@ def get_logger(filename, tqdm=True):
     return logging.getLogger()
 
 
+def interp2d(x, **kwargs):
+    expand_dims = [None] * (4 - x.ndim)
+    x = x[*expand_dims, ...]
+    return F.interpolate(x, **kwargs).squeeze()
+
+
+def get_trajectory_rk4(
+    equation: ImplicitExplicitODE,
+    w0: Array,
+    dt: float,
+    num_steps: int = 1,
+    record_every_steps: int = 1,
+    pbar=False,
+    pbar_desc="generating trajectories using RK4",
+    require_grad=False,
+):
+    """
+    vorticity stacked in the time dimension
+    all inputs and outputs are in the frequency domain
+    input: w0 (*, n, n)
+    output:
+
+    vorticity (*, n_t, kx, ky)
+    psi: (*, n_t, kx, ky)
+
+    velocity can be computed from psi
+    (*, 2, n_t, kx, ky) by calling spectral_rot_2d
+    """
+    w_all = []
+    dwdt_all = []
+    res_all = []
+    psi_all = []
+    w = w0
+    tqdm_iters = num_steps if TQDM_ITERS > num_steps else TQDM_ITERS
+    update_iters = num_steps // tqdm_iters
+    with tqdm(total=num_steps) as pbar:
+        for t_step in range(num_steps):
+            w, dwdt = equation.forward(w, dt=dt)
+            w.requires_grad_(require_grad)
+            dwdt.requires_grad_(require_grad)
+
+            if t_step % update_iters == 0:
+                res = equation.residual(w, dwdt)
+                res_norm = torch.linalg.norm(res).item()/w0.size(-1)
+                res_desc = f" unnormalized \|L(w) - f\|_2: {res_norm:.4e}"
+                desc = (
+                    datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+                    + " - "
+                    + pbar_desc
+                    + res_desc
+                )
+                pbar.set_description(desc)
+                pbar.update(update_iters)
+
+            if t_step % record_every_steps == 0:
+                _, psi = vorticity_to_velocity(equation.grid, w)
+                res = equation.residual(w, dwdt)
+
+                w_, dwdt_, psi, res = [
+                    var.detach().cpu().clone() for var in [w, dwdt, psi, res]
+                ]
+
+                w_all.append(w_)
+                psi_all.append(psi)
+                dwdt_all.append(dwdt_)
+                res_all.append(res)
+
+    result = {
+        var_name: torch.stack(var, dim=-3)
+        for var_name, var in zip(
+            ["vorticity", "stream", "vort_t", "residual"],
+            [w_all, psi_all, dwdt_all, res_all],
+        )
+    }
+    return result
+
+
 def get_trajectory_imex_crank_nicolson(
     w0,
     f,
-    visc,
-    T,
+    visc=1e-3,
+    T=1,
     delta_t=1e-3,
     record_steps=1,
     diam=1,
     dealias=True,
     subsample=1,
+    dtype=None,
+    pbar=True,
     **kwargs,
 ):
     """
@@ -83,11 +165,10 @@ def get_trajectory_imex_crank_nicolson(
         - vorticity, time derivative of vorticity, streamfunction, residual
     """
     # Grid size - must be power of 2
-    size, device, dtype = w0.size(), w0.device, w0.dtype
-    bsz, n = size[0], size[-1]
-    interp2d = partial(
-        F.interpolate, size=(n // subsample, n // subsample), mode="bilinear"
-    )
+    dtype = w0.dtype if dtype is None else dtype
+    device = w0.device
+    bsz, n = w0.size(0), w0.size(-1)
+    ns = n // subsample
 
     # Maximum frequency
     k_max = math.floor(n / 2.0)
@@ -124,7 +205,7 @@ def get_trajectory_imex_crank_nicolson(
     kx, ky, lap = kx[None, ...], ky[None, ...], lap[None, ...]
 
     # Dealiasing mask
-    dealiasing_filter = (
+    dealias_filter = (
         torch.unsqueeze(
             torch.logical_and(
                 torch.abs(kx) <= (2.0 / 3.0) * k_max,
@@ -139,7 +220,7 @@ def get_trajectory_imex_crank_nicolson(
     )
 
     # Saving solution and time
-    size = bsz, record_steps, n // subsample, n // subsample
+    size = bsz, record_steps, ns, ns
     vort, vort_t, stream, residual = [
         torch.empty(*size, device="cpu") for _ in range(4)
     ]
@@ -156,14 +237,15 @@ def get_trajectory_imex_crank_nicolson(
     residualL2 = norm(res, dim=(-1, -2)).mean() / n
 
     desc = (
-        f"enstrophy w: {enstrophy:.4f} \ "
+        datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+        + f" - enstrophy w: {enstrophy:.4f} \ "
         + f"||L(w, psi) - f||_L2: {residualL2:.4e} \ "
     )
 
-    with tqdm(total=total_steps, desc=desc) as pbar:
+    with tqdm(total=total_steps, desc=desc, disable=not pbar) as pb:
         for j in range(total_steps):
 
-            w_h, _, w_h_t, psi_h, res_h = imex_crank_nicolson_step(
+            w_h, w_h_t, _, psi_h, res_h = imex_crank_nicolson_step(
                 w_h,
                 f_h,
                 visc,
@@ -171,7 +253,8 @@ def get_trajectory_imex_crank_nicolson(
                 diam=diam,
                 rfftmesh=(kx, ky),
                 laplacian=lap,
-                dealias_filter=dealiasing_filter,
+                dealias_filter=dealias_filter,
+                dealias=dealias,
                 **kwargs,
             )
 
@@ -197,17 +280,17 @@ def get_trajectory_imex_crank_nicolson(
                     visc,
                     (kx, ky),
                     lap,
-                    dealiasing_filter,
+                    dealias_filter=dealias_filter,
                     dealias=dealias,
                 )
                 res = fft.irfft2(res_h, s=(n, n)).real
 
                 if subsample > 1:
                     w, w_t, psi, res = (
-                        interp2d(w),
-                        interp2d(w_t),
-                        interp2d(psi),
-                        interp2d(res),
+                        interp2d(w, size=(ns, ns), mode="bilinear"),
+                        interp2d(w_t, size=(ns, ns), mode="bilinear"),
+                        interp2d(psi, size=(ns, ns), mode="bilinear"),
+                        interp2d(res, size=(ns, ns), mode="bilinear"),
                     )
                 # Record solution and time
                 vort[:, c] = w.detach().cpu()
@@ -221,11 +304,12 @@ def get_trajectory_imex_crank_nicolson(
                 residualL2 = norm(res, dim=(-1, -2)).mean() / n
                 divider = {0: "|", 1: "/", 2: "-", 3: "\\"}
                 desc = (
-                    f"enstrophy w: {enstrophy:.4f} {divider[c%4]} "
+                    datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+                    + f" - enstrophy w: {enstrophy:.4f} {divider[c%4]} "
                     + f" ||L(w, psi) - f||_2: {residualL2:.4e} {divider[c%4]} "
                 )
-                pbar.set_description(desc)
-            pbar.update()
+                pb.set_description(desc)
+            pb.update()
 
     return dict(
         vorticity=vort,
@@ -358,10 +442,24 @@ def get_args():
         help="the maximum speed in the init velocity field (default: 5)",
     )
     parser.add_argument(
+        "--filepath",
+        type=str,
+        default=None,
+        metavar="file path",
+        help="path to save the data (default: None)",
+    )
+    parser.add_argument(
+        "--logpath",
+        type=str,
+        default=None,
+        metavar="log path",
+        help="path to save the logs (default: None)",
+    )
+    parser.add_argument(
         "--filename",
         type=str,
         default=None,
-        metavar="filename",
+        metavar="file name",
         help="file name for Navier-Stokes data (default: None)",
     )
     parser.add_argument(
@@ -392,6 +490,18 @@ def get_args():
         help="Disable the dealias masking to the nonlinear convection term",
     )
     parser.add_argument(
+        "--no-tqdm",
+        action="store_true",
+        default=False,
+        help="Disable program bar for data generation",
+    )
+    parser.add_argument(
+        "--demo-plots",
+        action="store_true",
+        default=False,
+        help="plot several trajectories for the generated data",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=1127825,
@@ -402,6 +512,23 @@ def get_args():
     return parser.parse_args()
 
 
+def save_pickle(data, save_path, append=True):
+    mode = "ab" if append else "wb"
+    with open(save_path, mode) as f:
+        dill.dump(data, f)
+
+
+def load_pickle(load_path, mode="rb"):
+    data = []
+    with open(load_path, mode=mode) as f:
+        try:
+            while True:
+                data.append(dill.load(f))
+        except EOFError:
+            pass
+    return data
+
+
 def pickle_to_pt(data_path, save_path=None):
     """
     convert serialized data from pickle to pytorch pt file
@@ -409,13 +536,14 @@ def pickle_to_pt(data_path, save_path=None):
     https://stackoverflow.com/a/28745948/622119
     """
     save_path = data_path.replace(".pkl", ".pt") if save_path is None else save_path
-    result = []
-    with open(data_path, "rb") as f:
-        while True:
-            try:
-                result.append(dill.load(f))
-            except EOFError:
-                break
+    # result = []
+    # with open(data_path, "rb") as f:
+    #     while True:
+    #         try:
+    #             result.append(dill.load(f))
+    #         except EOFError:
+    #             break
+    result = load_pickle(data_path)
 
     data = defaultdict(list)
     for _res in result:
@@ -423,7 +551,10 @@ def pickle_to_pt(data_path, save_path=None):
             data[field].append(value)
 
     for field, value in data.items():
-        data[field] = torch.cat(value)
+        v = torch.cat(value)
+        if v.ndim == 1: # time steps or seed
+            v = torch.unique(v)
+        data[field] = v
 
     torch.save(data, data_path)
 

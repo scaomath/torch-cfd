@@ -24,14 +24,12 @@ from tqdm import tqdm
 
 from . import grids
 
-TQDM_ITERS = 500
-
 Array = torch.Tensor
 Grid = grids.Grid
 
 
-def spectral_laplacian_2d(rfft_mesh):
-    kx, ky = rfft_mesh
+def spectral_laplacian_2d(fft_mesh):
+    kx, ky = fft_mesh
     # (2 * torch.pi * 1j)**2
     lap = -4 * (torch.pi) ** 2 * (abs(kx) ** 2 + abs(ky) ** 2)
     lap[..., 0, 0] = 1
@@ -46,6 +44,15 @@ def spectral_curl_2d(vhat, rfft_mesh):
     uhat, vhat = vhat
     kx, ky = rfft_mesh
     return 2j * torch.pi * (vhat * kx - uhat * ky)
+
+
+def spectral_div_2d(vhat, rfft_mesh):
+    r"""
+    Computes the 2D divergence in the Fourier basis.
+    """
+    uhat, vhat = vhat
+    kx, ky = rfft_mesh
+    return 2j * torch.pi * (uhat * kx + vhat * ky)
 
 
 def spectral_grad_2d(vhat, rfft_mesh):
@@ -162,6 +169,14 @@ class ImplicitExplicitODE(nn.Module):
         step_size: float,
     ):
         """Solves `u - step_size * implicit_terms(u) = f` for u."""
+        raise NotImplementedError
+
+    def residual(
+        self,
+        u: Array,
+        u_t: Array,
+    ):
+        """Computes the residual of the PDE."""
         raise NotImplementedError
 
 
@@ -442,65 +457,3 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
             vort_hat = self.solver(vort_hat, dt, self)
         dvortdt_hat = 1 / (steps * dt) * (vort_hat - vort_old)
         return vort_hat, dvortdt_hat
-
-
-def get_trajectory(
-    equation: ImplicitExplicitODE,
-    w0: Array,
-    dt: float,
-    num_steps: int = 1,
-    record_every_steps: int = 1,
-    pbar=False,
-    pbar_desc="",
-    require_grad=False,
-):
-    """
-    vorticity stacked in the time dimension
-    all inputs and outputs are in the frequency domain
-    input: w0 (*, n, n)
-    output:
-
-    vorticity (*, n_t, kx, ky)
-    psi: (*, n_t, kx, ky)
-
-    velocity can be computed from psi
-    (*, 2, n_t, kx, ky) by calling spectral_rot_2d
-    """
-    w_all = []
-    dwdt_all = []
-    res_all = []
-    psi_all = []
-    w = w0
-    tqdm_iters = num_steps if TQDM_ITERS > num_steps else TQDM_ITERS
-    update_iters = num_steps // tqdm_iters
-    with tqdm(total=num_steps) as pbar:
-        for t_step in range(num_steps):
-            w, dwdt = equation.forward(w, dt=dt)
-            w.requires_grad_(require_grad)
-            dwdt.requires_grad_(require_grad)
-
-            if t_step % update_iters == 0:
-                pbar.set_description(pbar_desc)
-                pbar.update(update_iters)
-
-            if t_step % record_every_steps == 0:
-                _, psi = vorticity_to_velocity(equation.grid, w)
-                res = equation.residual(w, dwdt)
-
-                w_, dwdt_, psi, res = [
-                    var.detach().cpu().clone() for var in [w, dwdt, psi, res]
-                ]
-
-                w_all.append(w_)
-                psi_all.append(psi)
-                dwdt_all.append(dwdt_)
-                res_all.append(res)
-
-    result = {
-        var_name: torch.stack(var, dim=-3)
-        for var_name, var in zip(
-            ["vorticity", "stream", "vort_t", "residual"],
-            [w_all, psi_all, dwdt_all, res_all],
-        )
-    }
-    return result

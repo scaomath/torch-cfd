@@ -32,8 +32,12 @@ def main(args):
     [1]: McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow. Journal of Fluid Mechanics, 146, 21-43.
 
     Training dataset:
-    python3 data_gen_McWilliams2d.py --sample-size 1280 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2 * torch.pi" --double
+    >>> python3 data_gen_McWilliams2d.py --sample-size 1280 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double
+
+    Testing dataset for plotting the enstrohpy spectrum:
+    >>> python3 data_gen_McWilliams2d.py --sample-size 32 --batch-size 8 --grid-size 256 --subsample 1 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double
     """
+
     current_time = datetime.now().strftime("%d_%b_%Y_%Hh%Mm")
     log_name = "".join(os.path.basename(__file__).split(".")[:-1])
 
@@ -72,10 +76,8 @@ def main(args):
     dtype_str = "_fp64" if args.double else ""
     filename = args.filename
     if filename is None:
-        filename = (
-            f"McWilliams2d{dtype_str}_{ns}x{ns}"
-            + f"_N{total_samples}_v{viscosity:.0e}"
-            + f"_T{num_snapshots}.pt".replace("e-0", "e-")
+        filename = f"McWilliams2d{dtype_str}_{ns}x{ns}_N{total_samples}_v{viscosity:.0e}_T{num_snapshots}.pt".replace(
+            "e-0", "e-"
         )
         args.filename = filename
     data_filepath = os.path.join(DATA_PATH, filename)
@@ -89,6 +91,7 @@ def main(args):
         logger.info(f"Save data to {data_filepath}")
 
     cuda = not args.no_cuda and torch.cuda.is_available()
+    no_tqdm = args.no_tqdm
     device = torch.device("cuda:0" if cuda else "cpu")
 
     torch.set_default_dtype(dtype)
@@ -106,7 +109,9 @@ def main(args):
     ).to(device)
 
     for i, idx in enumerate(range(0, total_samples, batch_size)):
-        logger.info(f"Generate trajectory for {i+1}-th batch of {total_samples}")
+        logger.info(
+            f"Generate trajectory for {i+1}-th batch of {total_samples} samples"
+        )
         logger.info(
             f"random state: {random_state + idx} to {random_state + idx + batch_size-1}"
         )
@@ -121,19 +126,21 @@ def main(args):
         )
         vort_hat = fft.rfft2(vort_init).to(device)
 
-        with tqdm(total=warmup_steps) as pbar:
+        with tqdm(total=warmup_steps, disable=no_tqdm) as pbar:
             for j in range(warmup_steps):
                 vort_hat, _ = ns2d.step(vort_hat, dt)
                 if j % 100 == 0:
+                    desc = datetime.now().strftime("%d-%b-%Y %H:%M:%S") + ' - Warmup'
+                    pbar.set_description(desc)
                     pbar.update(100)
 
-        result = get_trajectory(
+        result = get_trajectory_rk4(
             ns2d,
             vort_hat,
             dt,
             num_steps=total_steps,
             record_every_steps=record_every_iters,
-            pbar=True,
+            pbar=not no_tqdm,
         )
 
         for field, value in result.items():
@@ -149,15 +156,21 @@ def main(args):
         result["random_states"] = torch.tensor(
             [random_state + idx + k for k in range(batch_size)], dtype=torch.int32
         )
-        logger.info(f"Save {i}-th batch to {data_filepath}")
-        with open(data_filepath, "ab") as f:
-            dill.dump(result, f)
+        logger.info(f"Save {i+1}-th batch to {data_filepath}")
+        save_pickle(result, data_filepath)
 
     pickle_to_pt(data_filepath)
-
-    verify_trajectories(
-        data_filepath, dt=record_every_iters * dt, T_warmup=T_warmup, n_samples=1
-    )
+    logger.info(f"Done saving.")
+    if args.demo_plots:
+        try:
+            verify_trajectories(
+                data_filepath,
+                dt=record_every_iters * dt,
+                T_warmup=T_warmup,
+                n_samples=1,
+            )
+        except Exception as e:
+            logger.error(f"Error in plotting: {e}")
 
 
 if __name__ == "__main__":
