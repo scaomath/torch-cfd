@@ -33,10 +33,11 @@ class OutConvFT(OutConv):
         diam=1.0,
         n_grid: int = 256,
         out_steps=None,
+        spatial_padding: int = 0,
         temporal_padding: bool = True,
         norm="backward",
         finetune=True,
-        dealias=False,
+        dealias=True,
         delta=5e-2,
         visc=1e-3,
         dt=1e-6,  # marching step for the solver
@@ -52,6 +53,7 @@ class OutConvFT(OutConv):
             n_grid=n_grid,
             norm=norm,
             out_steps=out_steps,
+            spatial_padding=spatial_padding,
             temporal_padding=temporal_padding,
         )
         """
@@ -133,7 +135,11 @@ class OutConvFT(OutConv):
                     old_bias = old_conv.bias[ix + 2 * iy].data
                     conv.weight[ix + 2 * iy].data[..., sx, sy, st, :] = old_weights
                     conv.bias[ix + 2 * iy].data[..., sx, sy, st, :] = old_bias
+
         self.conv = conv
+        self.mode_x = modes_x
+        self.mode_y = modes_y
+        self.mode_t = modes_t
 
     @staticmethod
     def get_temporal_derivative(w_h, f_h, dt, weight=(0, 1), **kwargs):
@@ -198,17 +204,12 @@ class OutConvFT(OutConv):
             "weight": self.bdf_weight,
         }
 
-        v = torch.cat([v_res.unsqueeze(1)[..., -2:], v], dim=-1)
-        v_res = v_res[..., -1:]
-
-        w = self.conv(v, out_steps=out_steps + 2)  # (b, 1, x, y, t)
-        w = w[..., -out_steps:].squeeze(1)
-        w = w + v_res  # (b, x, y, t)
+        v = super().forward(v, v_res, out_steps=out_steps)
 
         if not self.finetune or original:
-            return w
+            return v
         else:
-            return self._fine_tune(w, f, **solver_kws)
+            return self._fine_tune(v, f, **solver_kws)
 
 
 if __name__ == "__main__":
