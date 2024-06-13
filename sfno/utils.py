@@ -66,7 +66,7 @@ def color(string: str, color: Colors = Colors.yellow) -> str:
 
 
 @contextmanager
-def timer(label: str = "", compact=False) -> Generator[None, None, None]:
+def timer(label: str = "", compact=False, quiet=False) -> Generator[None, None, None]:
     """
     https://www.kaggle.com/c/riiid-test-answer-prediction/discussion/203020#1111022
     print
@@ -76,7 +76,7 @@ def timer(label: str = "", compact=False) -> Generator[None, None, None]:
     p = psutil.Process(os.getpid())
     m0 = p.memory_info()[0] / 2.0**30
     start = time()  # Setup - __enter__
-    if not compact:
+    if not compact and not quiet:
         print(color(f"{label}:\nStart at {ctime(start)};", color=Colors.blue))
         try:
             yield  # yield to body of `with` statement
@@ -100,13 +100,18 @@ def timer(label: str = "", compact=False) -> Generator[None, None, None]:
                 )
             )
             print("\n")
-    else:
+    elif compact and not quiet:
         yield
         print(
             color(
                 f"{label} - done in {time() - start:.6f} seconds. \n", color=Colors.blue
             )
         )
+    else:
+        try:
+            yield
+        finally:
+            pass
 
 
 def pretty_tensor_size(size):
@@ -227,7 +232,7 @@ def get_core_optimizer(name: str):
 if __name__ == "__main__":
     get_seed(42)
 else:
-    with timer(f"Loading modules for visualization", compact=True):
+    with timer("", quiet=True):
         try:
             import plotly.express as px
             import plotly.figure_factory as ff
