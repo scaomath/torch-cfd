@@ -161,3 +161,6 @@ cython_debug/
 
 # data files
 *.pt
+
+# mac os
+.DS_Store

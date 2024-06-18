@@ -23,7 +23,6 @@ from data import *
 from datasets import BochnerDataset
 from losses import SobolevLoss
 import matplotlib.pyplot as plt
-from visualizations import plot_contour_trajectory
 from sfno import SFNO
 from torch.utils.data import DataLoader
 
@@ -74,12 +73,18 @@ def main(args):
     modes_t = args.modes_t
     width = args.width
     beta = args.beta
+    activation = args.activation
     spatial_padding = args.spatial_padding
+    pe_trainable = args.pe_trainable
+    pe_channel_expansion = args.pe_channel_expansion
+    pe_experimental = args.pe_experimental
+    lift_experimental = args.lift_experimental
 
     seed = args.seed
     eval_only = args.eval_only
+    train_only = args.train_only
 
-    get_seed(seed, printout=False)
+    get_seed(seed, quiet=True)
 
     beta_str = f"{beta:.0e}".replace("e-0", "e-").replace("e+0", "e")
     model_name = f"sfno_ex_{example}_ep{epochs}_m{modes}_w{width}_b{beta_str}.pt"
@@ -117,7 +122,12 @@ def main(args):
         torch.cuda.empty_cache()
         model = SFNO(modes, modes, modes_t, width, beta, 
                      output_steps=out_steps,
-                     spatial_padding=spatial_padding)
+                     spatial_padding=spatial_padding,
+                     activation=activation,
+                     pe_trainable=pe_trainable,
+                     pe_channel_expansion=pe_channel_expansion,
+                     pe_experimental=pe_experimental,
+                     lift_experimental=lift_experimental)
         logger.info(f"Number of parameters: {get_num_params(model)}")
         model.to(device)
 
@@ -184,61 +194,68 @@ def main(args):
 
         logger.info(f"{epochs} epochs training complete. Model saved to {path_model}")
 
-    test_dtype = torch.float64
-    torch.set_default_dtype(test_dtype)
-    test_file = DATA_FILES[example]["test"]
-    test_path = os.path.join(DATA_PATH, test_file)
-    logger.info(f"Testing data: {test_path}")
-    logger.info(f"Testing on {n_test}x{n_test} grid")
-    logger.info(f"Testing dtype is {torch.get_default_dtype()}")
-    test_dataset = BochnerDataset(
-        datapath=test_path,
-        n_samples=Ntest,
-        fields=[fs],
-        T_start=30,
-        steps=time_steps,
-        out_steps=out_steps,
-        dtype=test_dtype,
-        train=False,
-    )
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
-    torch.cuda.empty_cache()
-    model = SFNO(modes, modes, modes_t, width, beta,
-                 spatial_padding=spatial_padding).to(device)
-    model.load_state_dict(torch.load(path_model))
-    logger.info(f"Loaded model from {path_model}")
-    eval_metric = SobolevLoss(n_grid=n_test, norm_order=norm_order, relative=True)
+    if not train_only:
+        test_dtype = torch.float64
+        torch.set_default_dtype(test_dtype)
+        test_file = DATA_FILES[example]["test"]
+        test_path = os.path.join(DATA_PATH, test_file)
+        logger.info(f"Testing data: {test_path}")
+        logger.info(f"Testing on {n_test}x{n_test} grid")
+        logger.info(f"Testing dtype is {torch.get_default_dtype()}")
+        test_dataset = BochnerDataset(
+            datapath=test_path,
+            n_samples=Ntest,
+            fields=[fs],
+            T_start=30,
+            steps=time_steps,
+            out_steps=out_steps,
+            dtype=test_dtype,
+            train=False,
+        )
+        test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+        torch.cuda.empty_cache()
+        model = SFNO(modes, modes, modes_t, width, beta,
+                    spatial_padding=spatial_padding,
+                    activation=activation,
+                    pe_trainable=pe_trainable,
+                    pe_channel_expansion=pe_channel_expansion,
+                    pe_experimental=pe_experimental,
+                    lift_experimental=lift_experimental).to(device)
+        model.load_state_dict(torch.load(path_model))
+        logger.info(f"Loaded model from {path_model}")
+        eval_metric = SobolevLoss(n_grid=n_test, norm_order=norm_order, relative=True)
 
-    test_l2, preds, gt_solns = eval_epoch_ns(
-        model,
-        eval_metric,
-        test_loader,
-        device,
-        out_steps=out_steps,
-        return_output=True,
-    )
-    logger.info(f"Test L2 on {n_test}x{n_test} grid: {test_l2:.5e}")
+        test_l2, preds, gt_solns = eval_epoch_ns(
+            model,
+            eval_metric,
+            test_loader,
+            device,
+            out_steps=out_steps,
+            return_output=True,
+        )
+        logger.info(f"Test L2 on {n_test}x{n_test} grid: {test_l2:.5e}")
 
-    if args.demo_plots > 0:
-        try:
-            idx = np.random.randint(0, args.num_test_samples)
-            im1 = plot_contour_trajectory(
-                preds[idx],
-                num_snapshots=args.demo_plots,
-                T_start=args.time_warmup,
-                dt=args.dt,
-                title="SFNO predictions"
-            )
-            im2 = plot_contour_trajectory(
-                gt_solns[idx],
-                num_snapshots=args.demo_plots,
-                T_start=args.time_warmup,
-                dt=args.dt,
-                title="Ground truth generated by IMEX"
-            )
-            plt.show()
-        except Exception as e:
-            logger.error(f"Error plotting: {e}")
+        if args.demo_plots > 0:
+            try:
+                from visualizations import plot_contour_trajectory
+                idx = np.random.randint(0, args.num_test_samples)
+                im1 = plot_contour_trajectory(
+                    preds[idx],
+                    num_snapshots=args.demo_plots,
+                    T_start=args.time_warmup,
+                    dt=args.dt,
+                    title="SFNO predictions"
+                )
+                im2 = plot_contour_trajectory(
+                    gt_solns[idx],
+                    num_snapshots=args.demo_plots,
+                    T_start=args.time_warmup,
+                    dt=args.dt,
+                    title="Ground truth generated by IMEX"
+                )
+                plt.show()
+            except Exception as e:
+                logger.error(f"Error plotting: {e}")
 
 
 if __name__ == "__main__":
@@ -265,9 +282,15 @@ if __name__ == "__main__":
     parser.add_argument("--time-warmup", type=float, default=4.5)
     parser.add_argument("--dt", type=float, default=5.5 / 100)
     parser.add_argument("--beta", type=float, default=0.0)
+    parser.add_argument("--activation", type=str, default="GELU")
+    parser.add_argument("--pe-trainable", default=False, action="store_true")
+    parser.add_argument("--pe-experimental", default=False, action="store_true")
+    parser.add_argument("--pe-channel-expansion", default=False, action="store_true")
+    parser.add_argument("--lift-experimental", default=False, action="store_true")
     parser.add_argument("--double", default=False, action="store_true")
     parser.add_argument("--norm-order", type=float, default=0.0)
     parser.add_argument("--eval-only", default=False, action="store_true")
+    parser.add_argument("--train-only", default=False, action="store_true")
     parser.add_argument("--demo-plots", type=int, default=0)
 
     args = parser.parse_args()

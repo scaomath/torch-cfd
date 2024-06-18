@@ -13,9 +13,12 @@ import torch
 import torch.nn as nn
 
 
-def get_seed(s, printout=True, cudnn=True):
+def get_seed(s, quiet=True, cudnn=True, logger=None):
+    # rd.seed(s)
     os.environ["PYTHONHASHSEED"] = str(s)
     np.random.seed(s)
+    # pd.core.common.random_state(s)
+    # Torch
     torch.manual_seed(s)
     torch.cuda.manual_seed(s)
     if cudnn:
@@ -24,7 +27,7 @@ def get_seed(s, printout=True, cudnn=True):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(s)
 
-    if printout:
+    if not quiet or logger:
         message = f""""""
         message += f"""
         os.environ['PYTHONHASHSEED'] = str({s})
@@ -40,11 +43,15 @@ def get_seed(s, printout=True, cudnn=True):
         if torch.cuda.is_available():
             message += f"""
         torch.cuda.manual_seed_all({s})"""
-        print("\n")
-        print(f"The following code snippets have been run.")
-        print("=" * 50)
-        print(message)
-        print("=" * 50)
+            
+        if not quiet:
+            print("\n")
+            print(f"The following code snippets have been run.")
+            print("=" * 50)
+            print(message)
+            print("=" * 50)
+        if logger:
+            logger.info(message)
 
 
 class Colors:

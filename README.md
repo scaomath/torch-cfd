@@ -36,7 +36,7 @@ Data generation instructions are available in the [SFNO folder](./sfno/).
   - [2D simulation with a pseudo-spectral solver](./examples/Kolmogrov2d_rk4_cn_forced_turbulence.ipynb)
 - Demos of Spatiotemporal FNO's training and evaluation
   - [Training of SFNO for only 15 epochs for the isotropic turbulence example](./examples/ex2_SFNO_train.ipynb)
-  - [Training of SFNO for only ***10*** epochs with 1k samples and reach `1e-2` level of relative error](./examples/ex2_SFNO_train_fnodata.ipynb) using the data in the FNO paper, which to our best knowledge no operator learner can do this in 500 epochs in the small data regime.
+  - [Training of SFNO for only ***10*** epochs with 1k samples and reach `1e-2` level of relative error](./examples/ex2_SFNO_train_fnodata.ipynb) using the data in the FNO paper, which to our best knowledge no operator learner can do this in <100 epochs in the small data regime.
   - [Fine-tuning of SFNO on a `256x256` grid for only 50 ADAM iterations to reach `1e-6` residual in the functional norm using FNO data](./examples/ex2_SFNO_finetune_fnodata.ipynb)
   - [Fine-tuning of SFNO on the `256x256` grid for the McWilliams 2d isotropic turbulence](./examples/ex2_SFNO_finetune_McWilliams2d.ipynb)
   - [Training of SFNO for only 5 epoch to match the inverse cascade of Kolmogorov flow](./examples/ex2_SFNO_5ep_spectra.ipynb)
@@ -48,7 +48,7 @@ The Apache 2.0 License in the root folder applies to the `torch-cfd` folder of t
 ## Contributions
 PR welcome. Currently, the port of `torch-cfd` currently includes:
 - The pseudospectral method for vorticity uses anti-aliasing filtering techniques for nonlinear terms to maintain stability.
-- Temporal discretization: Currently only RK4 temporal discretization using explicit time-stepping for advection and either implicit or explicit time-stepping for diffusion.
+- Temporal discretization: Currently only RK4 temporal discretization uses explicit time-stepping for advection and either implicit or explicit time-stepping for diffusion.
 - Boundary conditions: only periodic boundary conditions.
 
 ## Reference
@@ -65,5 +65,5 @@ PR welcome. Currently, the port of `torch-cfd` currently includes:
 ## Acknowledgments
 The research of Brarda and Xi is supported by the National Science Foundation award DMS-2208412. 
 The work of Li was performed under the auspices of
-the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DEAC52-07NA27344 and was supported by the LLNL-LDRD program under Project No. 24ERD033. Cao is greatful for the support from [Long Chen (UC Irvine)](https://github.com/lyc102/ifem) and 
+the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DEAC52-07NA27344 and was supported by the LLNL-LDRD program under Project No. 24ERD033. Cao is grateful for the support from [Long Chen (UC Irvine)](https://github.com/lyc102/ifem) and 
 [Ludmil Zikatanov (Penn State)](https://github.com/HAZmathTeam/hazmath) over the years, and their efforts in open-sourcing scientific computing codes. Cao also appreciates the support from the National Science Foundation DMS-2309778, and the free A6000 credits at the SSE ML cluster from the University of Missouri.

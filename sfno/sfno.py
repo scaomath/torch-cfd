@@ -8,6 +8,8 @@
 # THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
+from copy import deepcopy
+
 from functools import partial
 
 import torch
@@ -16,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from torch.nn.init import constant_, xavier_uniform_
-from data import *
+from data import fft_expand_dims, fft_mesh_2d, spectral_div_2d, spectral_grad_2d, spectral_laplacian_2d
 
 
 class LayerNorm3d(nn.GroupNorm):
@@ -28,8 +30,13 @@ class LayerNorm3d(nn.GroupNorm):
     """
 
     def __init__(
-        self, num_channels, eps=1e-06, elementwise_affine=True, device=None, dtype=None
-    ) -> None:
+        self, 
+        num_channels, 
+        eps=1e-07, 
+        elementwise_affine=True, 
+        device=None, 
+        dtype=None
+    ):
         super().__init__(
             num_groups=1,
             num_channels=num_channels,
@@ -44,60 +51,98 @@ class LayerNorm3d(nn.GroupNorm):
 
 
 class MLP(nn.Module):
-    def __init__(self, in_channels, out_channels, mid_channels, activation=True):
-        super(MLP, self).__init__()
+    def __init__(
+        self, in_channels, out_channels, mid_channels, activation: str = "GELU"
+    ):
+        super().__init__()
         self.mlp1 = nn.Conv3d(in_channels, mid_channels, 1)
         self.mlp2 = nn.Conv3d(mid_channels, out_channels, 1)
-        self.activation = nn.GELU() if activation else nn.Identity()
+        self.activation = getattr(nn, activation)()
 
-    def forward(self, x):
+    def forward(self, v):
         for block in [self.mlp1, self.activation, self.mlp2]:
-            x = block(x)
-        return x
+            v = block(v)
+        return v
 
 
 class PositionalEncoding(nn.Module):
     """
     https://pytorch.org/tutorials/beginner/transformer_tutorial.html
-    standard sinosoidal PE inspired from the Transformers
-    input is (batch, 1, x, y, t)
-    output is (batch, C, x, y, t)
-    1 comes from the input channel
+    a modified sinosoidal PE inspired from the Transformers
+    input is (batch, *, nx, ny, t)
+    output is (batch, C+*, nx, ny, t)
+    1 comes from the input
     time_exponential_scale comes from the a priori estimate of Navier-Stokes Eqs
+    the random feature basis are added with a pointwise conv3d
     """
 
     def __init__(
-        self, num_channels=10, max_time_steps=100, time_exponential_scale=1e-2
+        self,
+        modes_x: int = 16,
+        modes_y: int = 16,
+        modes_t: int = 5,
+        num_channels: int = 20,
+        input_shape=(64, 64, 10),
+        channel_expansion=False,
+        max_time_steps=100,
+        time_exponential_scale=1e-2,
+        **kwargs,
     ):
         super().__init__()
-        self.num_channels = num_channels
-        assert num_channels % 2 == 0
+        if channel_expansion:
+            self.num_channels = modes_x * modes_y * modes_t + 3  # the Euclidean coords
+            self.proj = nn.Identity()
+        else:
+            self.num_channels = num_channels  # the Euclidean coords
+            self.proj = nn.Conv3d(
+                modes_x * modes_y * modes_t + 3, num_channels, kernel_size=1
+            )
+
+        self.modes_x = modes_x
+        self.modes_y = modes_y
+        self.modes_t = modes_t
+        assert modes_x % 2 == 0
+        assert modes_y % 2 == 0
+        assert modes_t % 2 == 0
+
         self.max_time_steps = max_time_steps
         self.time_exponential_scale = time_exponential_scale
-        self.pe = None
+        self._pe(*input_shape)
 
-    def forward(self, x):
-        if self.pe is None or self.pe.shape[-3:] != x.shape[-3:]:
-            *_, nx, ny, nt = x.size()  # (batch, 1, x, y, t)
-            gridx = torch.linspace(0, 1, nx)
-            gridy = torch.linspace(0, 1, ny)
-            gridt = torch.linspace(0, 1, self.max_time_steps + 1)[1 : nt + 1]
-            gridx, gridy, _gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
-            pe = [gridx, gridy, _gridt]
-            for k in range(self.num_channels):
-                basis = torch.sin if k % 2 == 0 else torch.cos
-                _gridt = torch.exp(self.time_exponential_scale * gridt) * basis(
-                    torch.pi * (k + 1) * gridt
-                )
-                _gridt = repeat(_gridt, "t -> x y t", x=nx, y=ny)
-                pe.append(_gridt)
-            pe = torch.stack(pe)
-            pe = rearrange(
-                pe, "c x y t -> 1 c x y t"
-            )  # (1, num_channels+3, nx, ny, nt)
-            pe = pe.to(x.dtype).to(x.device)
-            self.pe = pe
-        return x + self.pe
+    def _pe(self, *shape):
+        nx, ny, nt = shape
+        gridx = torch.linspace(0, 1, nx)
+        gridy = torch.linspace(0, 1, ny)
+        gridt = torch.linspace(0, 1, self.max_time_steps + 1)[1 : nt + 1]
+        gridx, gridy, gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
+        pe = [gridx, gridy, gridt]
+
+        for i in range(1, self.modes_x + 1):
+            basis_x = torch.sin if i % 2 == 0 else torch.cos
+            for j in range(1, self.modes_y + 1):
+                basis_y = torch.sin if j % 2 == 0 else torch.cos
+                for k in range(1, self.modes_t + 1):
+                    basis_t = torch.sin if k % 2 == 0 else torch.cos
+                    basis = (
+                        1
+                        / (i * j * k)
+                        * torch.exp(self.time_exponential_scale * gridt)
+                        * basis_x(torch.pi * i * gridx)
+                        * basis_y(torch.pi * j * gridy)
+                        * basis_t(torch.pi * k * gridt)
+                    )
+                    if i == 0 and j == 0 and k == 0:
+                        print(basis.shape)
+                    pe.append(basis)
+        pe = torch.stack(pe).unsqueeze(0)  # (1, num_channels+3, nx, ny, nt)
+        self.pe = pe
+
+    def forward(self, v):
+        if self.pe is None or self.pe.shape[-3:] != v.shape[-3:]:
+            *_, nx, ny, nt = v.size()  # (batch, 1, x, y, t)
+            self._pe(nx, ny, nt)
+        pe = self.pe.to(v.dtype).to(v.device)
+        return self.proj(v + pe)
 
 
 class Helmholtz(nn.Module):
@@ -184,30 +229,47 @@ class LiftingOperator(nn.Module):
         modes_t,
         latent_steps=10,
         norm="backward",
+        activation: str = "GELU",
         beta=0.1,
+        pe_channel_expansion=False,
+        channel_expansion=128,
+        **kwargs,
     ) -> None:
         """
         the latent steps: n_t at hidden layers
         """
         super().__init__()
-        self.pe = PositionalEncoding(width, time_exponential_scale=beta)
-        self.norm = LayerNorm3d(width + 3)
-        self.proj = nn.Conv3d(width + 3, width, kernel_size=1)
+        if modes_t % 2 != 0:
+            pe_modes_t = modes_t - 1
+
+        self.pe = PositionalEncoding(
+            modes_x // 2,
+            modes_y // 2,
+            pe_modes_t,
+            num_channels=width,
+            time_exponential_scale=beta,
+            channel_expansion=pe_channel_expansion,
+        )
+
+        in_channels = self.pe.num_channels
+        self.norm = LayerNorm3d(in_channels)
+        self.proj = nn.Conv3d(in_channels, width, kernel_size=1)
+
+        conv_size = [width, width, modes_x, modes_y, modes_t]
         self.sconv = SpectralConvT(
-            width,
-            width,
-            modes_x,
-            modes_y,
-            modes_t,
+            *conv_size,
             out_steps=latent_steps,
             norm=norm,
             bias=False,
         )
+        self.nonlinear = getattr(nn, activation)()
+        self.mlp = MLP(width, width, channel_expansion)
 
-    def forward(self, x):
-        for block in [self.pe, self.norm, self.proj, self.sconv]:
-            x = block(x)
-        return x
+    def forward(self, v):
+        for b in [self.pe, self.norm, self.proj]:
+            v = b(v)
+        v = self.nonlinear(v + self.mlp(self.sconv(v)))
+        return v
 
 
 class OutConv(nn.Module):
@@ -224,6 +286,7 @@ class OutConv(nn.Module):
         spatial_padding: int = 0,
         temporal_padding: bool = True,
         norm="backward",
+        **kwargs,
     ) -> None:
         super().__init__()
         """
@@ -445,20 +508,21 @@ class SFNO(nn.Module):
         modes_y,
         modes_t,
         width,
-        beta=-1e-2,
-        delta=1e-1,
+        beta: float = -1e-2,
+        delta: float = 1e-1,
         diam: float = 1,
         n_grid: int = 64,
         dim_reduction: int = 1,
         num_spectral_layers: int = 4,
-        fft_norm="backward",
-        activation: str = "GELU",
+        fft_norm: str = "backward",
+        activation: str = "ReLU",
         spatial_padding: int = 0,
         temporal_padding: bool = True,
         channel_expansion: int = 128,
         latent_steps: int = 10,
         output_steps: int = None,
         debug=False,
+        **kwargs,
     ):
         super().__init__()
 
@@ -510,26 +574,25 @@ class SFNO(nn.Module):
             latent_steps=latent_steps,
             norm=fft_norm,
             beta=beta,
-        )
-        self.spectral_conv = nn.ModuleList(
-            [
-                SpectralConvS(width, width, modes_x, modes_y, modes_t)
-                for _ in range(num_spectral_layers)
-            ]
-        )
-
-        self.mlp = nn.ModuleList(
-            [MLP(width, width, channel_expansion) for _ in range(num_spectral_layers)]
-        )
-
-        self.w = nn.ModuleList(
-            [nn.Conv3d(width, width, 1) for _ in range(num_spectral_layers)]
+            activation=activation,
+            channel_expansion=channel_expansion,
         )
 
         act_func = getattr(nn, activation)
-        self.activations = nn.ModuleList(
-            [act_func() for _ in range(num_spectral_layers)]
-        )
+
+        for attr, module, args in zip(
+            ["spectral_conv", "mlp", "w", "activations"],
+            [SpectralConvS, MLP, nn.Conv3d, act_func],
+            [
+                (width, width, modes_x, modes_y, modes_t),
+                (width, width, channel_expansion, activation),
+                (width, width, 1),
+                (),
+            ],
+        ):
+            setattr(
+                self, attr, self._get_modulelist(module, num_spectral_layers, *args)
+            )
 
         self.r = nn.Conv3d(width, dim_reduction, kernel_size=1)
         self.q = OutConv(
@@ -547,6 +610,10 @@ class SFNO(nn.Module):
         )
         self.out_steps = output_steps
         self.debug = debug
+
+    @staticmethod
+    def _get_modulelist(module: nn.Module, num_layers, *args):
+        return nn.ModuleList([deepcopy(module(*args)) for _ in range(num_layers)])
 
     latent_tensors = {}
 
