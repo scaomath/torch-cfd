@@ -50,9 +50,11 @@ def main(args):
 
     log_filename = os.path.join(LOG_PATH, f"{current_time}_{log_name}.log")
     logger = get_logger(log_filename)
+    logger.info(f"Saving log at {log_filename}")
+
 
     all_args = {k: v for k, v in vars(args).items() if not callable(v)}
-    logger.info(" | ".join(f"{k}={v}" for k, v in all_args.items()))
+    logger.info("Arguments: "+" | ".join(f"{k}={v}" for k, v in all_args.items()))
 
     example = args.example
     Ntrain = args.num_samples
@@ -72,19 +74,19 @@ def main(args):
     modes = args.modes
     modes_t = args.modes_t
     width = args.width
+    num_layers = args.num_layers
     beta = args.beta
     activation = args.activation
     spatial_padding = args.spatial_padding
     pe_trainable = args.pe_trainable
-    pe_channel_expansion = args.pe_channel_expansion
-    pe_experimental = args.pe_experimental
-    lift_experimental = args.lift_experimental
+    spatial_random_feats = args.spatial_random_feats
+    lift_activation = not args.lift_linear
 
     seed = args.seed
     eval_only = args.eval_only
     train_only = args.train_only
 
-    get_seed(seed, quiet=True)
+    get_seed(seed, quiet=False, logger=logger)
 
     beta_str = f"{beta:.0e}".replace("e-0", "e-").replace("e+0", "e")
     model_name = f"sfno_ex_{example}_ep{epochs}_m{modes}_w{width}_b{beta_str}.pt"
@@ -120,14 +122,14 @@ def main(args):
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
         torch.cuda.empty_cache()
-        model = SFNO(modes, modes, modes_t, width, beta, 
+        model = SFNO(modes, modes, modes_t, width, beta,
+                     num_spectral_layers=num_layers, 
                      output_steps=out_steps,
                      spatial_padding=spatial_padding,
                      activation=activation,
                      pe_trainable=pe_trainable,
-                     pe_channel_expansion=pe_channel_expansion,
-                     pe_experimental=pe_experimental,
-                     lift_experimental=lift_experimental)
+                     spatial_random_feats=spatial_random_feats,
+                     lift_activation=lift_activation)
         logger.info(f"Number of parameters: {get_num_params(model)}")
         model.to(device)
 
@@ -144,17 +146,16 @@ def main(args):
         )
 
         loss_func = SobolevLoss(n_grid=n, norm_order=norm_order, relative=True)
-        logger.info(f"Loss func: {loss_func}")
+        get_config(loss_func, logger=logger)
 
         for ep in range(epochs):
             model.train()
             train_l2 = 0.0
 
             with tqdm(train_loader) as pbar:
-                time_epoch = datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-                pbar.set_description(
-                    f"{time_epoch} - Epoch [{ep+1}/{epochs}] train rel L2: {train_l2:.4e}"
-                )
+                t_ep = datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+                tr_loss_str = f"current train rel L2: 0.0"
+                pbar.set_description(f"{t_ep} - Epoch [{ep+1:3d}/{epochs}]  {tr_loss_str:>35}")
                 for i, data in enumerate(train_loader):
                     l2 = train_batch_ns(
                         model,
@@ -171,9 +172,8 @@ def main(args):
                         scheduler.step()
 
                     if i % 4 == 0:
-                        pbar.set_description(
-                            f"{time_epoch} - Epoch [{ep+1}/{epochs}] train rel L2: {l2.item():.4e}"
-                        )
+                        tr_loss_str = f"current train rel L2: {l2.item():.4e}"
+                        pbar.set_description(f"{t_ep} - Epoch [{ep+1:3d}/{epochs}]  {tr_loss_str:>35}")
                         pbar.update(4)
             val_l2_min = 1e4
             val_l2 = eval_epoch_ns(
@@ -187,10 +187,10 @@ def main(args):
             if val_l2 < val_l2_min:
                 torch.save(model.state_dict(), path_model)
                 val_l2_min = val_l2
-            logger.info(
-                f"Epoch [{ep+1}/{epochs}] avg train rel L2: {train_l2/len(train_loader):.4e}"
-            )
-            logger.info(f"Epoch [{ep+1}/{epochs}]   avg val rel L2: {val_l2:.4e}")
+            tr_loss_str = f"avg train rel L2: {train_l2/len(train_loader):.4e}"
+            val_loss_str = f"avg val rel L2: {val_l2:.4e}"
+            logger.info(f"Epoch [{ep+1:3d}/{epochs}]  {tr_loss_str:>35}")
+            logger.info(f"Epoch [{ep+1:3d}/{epochs}]  {val_loss_str:>35}")
 
         logger.info(f"{epochs} epochs training complete. Model saved to {path_model}")
 
@@ -215,12 +215,12 @@ def main(args):
         test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
         torch.cuda.empty_cache()
         model = SFNO(modes, modes, modes_t, width, beta,
+                    num_spectral_layers=num_layers, 
                     spatial_padding=spatial_padding,
                     activation=activation,
                     pe_trainable=pe_trainable,
-                    pe_channel_expansion=pe_channel_expansion,
-                    pe_experimental=pe_experimental,
-                    lift_experimental=lift_experimental).to(device)
+                    spatial_random_feats=spatial_random_feats,
+                    lift_activation=lift_activation).to(device)
         model.load_state_dict(torch.load(path_model))
         logger.info(f"Loaded model from {path_model}")
         eval_metric = SobolevLoss(n_grid=n_test, norm_order=norm_order, relative=True)
@@ -276,6 +276,7 @@ if __name__ == "__main__":
     parser.add_argument("--width", type=int, default=10)
     parser.add_argument("--modes", type=int, default=32)
     parser.add_argument("--modes-t", type=int, default=5)
+    parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--spatial-padding", type=int, default=0)
     parser.add_argument("--time-steps", type=int, default=10)
     parser.add_argument("--out-time-steps", type=int, default=10)
@@ -284,9 +285,8 @@ if __name__ == "__main__":
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--activation", type=str, default="GELU")
     parser.add_argument("--pe-trainable", default=False, action="store_true")
-    parser.add_argument("--pe-experimental", default=False, action="store_true")
-    parser.add_argument("--pe-channel-expansion", default=False, action="store_true")
-    parser.add_argument("--lift-experimental", default=False, action="store_true")
+    parser.add_argument("--spatial-random-feats", default=False, action="store_true")
+    parser.add_argument("--lift-linear", default=False, action="store_true")
     parser.add_argument("--double", default=False, action="store_true")
     parser.add_argument("--norm-order", type=float, default=0.0)
     parser.add_argument("--eval-only", default=False, action="store_true")

@@ -52,7 +52,7 @@ class LayerNorm3d(nn.GroupNorm):
 
 class MLP(nn.Module):
     def __init__(
-        self, in_channels, out_channels, mid_channels, activation: str = "GELU"
+        self, in_channels, out_channels, mid_channels, activation: str = "ReLU"
     ):
         super().__init__()
         self.mlp1 = nn.Conv3d(in_channels, mid_channels, 1)
@@ -70,46 +70,43 @@ class PositionalEncoding(nn.Module):
     https://pytorch.org/tutorials/beginner/transformer_tutorial.html
     a modified sinosoidal PE inspired from the Transformers
     input is (batch, *, nx, ny, t)
-    output is (batch, C+*, nx, ny, t)
+    output is (batch, C, nx, ny, t)
     1 comes from the input
     time_exponential_scale comes from the a priori estimate of Navier-Stokes Eqs
     the random feature basis are added with a pointwise conv3d
     """
 
     def __init__(
-        self,
+        self, 
         modes_x: int = 16,
         modes_y: int = 16,
         modes_t: int = 5,
         num_channels: int = 20,
         input_shape=(64, 64, 10),
-        channel_expansion=False,
+        spatial_random_feats=False,
         max_time_steps=100,
         time_exponential_scale=1e-2,
         **kwargs,
     ):
         super().__init__()
-        if channel_expansion:
-            self.num_channels = modes_x * modes_y * modes_t + 3  # the Euclidean coords
-            self.proj = nn.Identity()
-        else:
-            self.num_channels = num_channels  # the Euclidean coords
-            self.proj = nn.Conv3d(
-                modes_x * modes_y * modes_t + 3, num_channels, kernel_size=1
-            )
-
+        assert num_channels % 2 == 0 and num_channels > 3
+        self.num_channels = num_channels # the Euclidean coords
+        self.max_time_steps = max_time_steps
+        self.time_exponential_scale = time_exponential_scale
         self.modes_x = modes_x
         self.modes_y = modes_y
         self.modes_t = modes_t
-        assert modes_x % 2 == 0
-        assert modes_y % 2 == 0
-        assert modes_t % 2 == 0
 
-        self.max_time_steps = max_time_steps
-        self.time_exponential_scale = time_exponential_scale
+        self._pe = self._pe_expanded if spatial_random_feats else self._pe
         self._pe(*input_shape)
+        if spatial_random_feats:
+            in_chan = modes_x * modes_y * modes_t + 3
+            self.proj = nn.Conv3d(in_chan, num_channels, kernel_size=1)
+        else:
+            self.proj = nn.Identity()
+        
 
-    def _pe(self, *shape):
+    def _pe_expanded(self, *shape):
         nx, ny, nt = shape
         gridx = torch.linspace(0, 1, nx)
         gridy = torch.linspace(0, 1, ny)
@@ -131,18 +128,33 @@ class PositionalEncoding(nn.Module):
                         * basis_y(torch.pi * j * gridy)
                         * basis_t(torch.pi * k * gridt)
                     )
-                    if i == 0 and j == 0 and k == 0:
-                        print(basis.shape)
                     pe.append(basis)
         pe = torch.stack(pe).unsqueeze(0)  # (1, num_channels+3, nx, ny, nt)
         self.pe = pe
 
-    def forward(self, v):
+    def _pe(self, *shape):
+        nx, ny, nt = shape  
+        gridx = torch.linspace(0, 1, nx)
+        gridy = torch.linspace(0, 1, ny)
+        gridt = torch.linspace(0, 1, self.max_time_steps+1)[1:nt+1]
+        gridx, gridy, _gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
+        pe = [gridx, gridy, _gridt]
+        for k in range(self.num_channels - 3):
+            basis = torch.sin if k % 2 == 0 else torch.cos
+            _gridt = torch.exp(self.time_exponential_scale * gridt) * basis(
+                torch.pi * (k + 1) * gridt
+            )
+            _gridt = _gridt.reshape(1, 1, nt).repeat(nx, ny, 1)
+            pe.append(_gridt)
+        pe = torch.stack(pe).unsqueeze(0)  # (1, num_channels+3, nx, ny, nt)
+        self.pe = pe
+
+    def forward(self, v: torch.Tensor):
         if self.pe is None or self.pe.shape[-3:] != v.shape[-3:]:
             *_, nx, ny, nt = v.size()  # (batch, 1, x, y, t)
             self._pe(nx, ny, nt)
         pe = self.pe.to(v.dtype).to(v.device)
-        return self.proj(v + pe)
+        return v + self.proj(pe)
 
 
 class Helmholtz(nn.Module):
@@ -229,10 +241,11 @@ class LiftingOperator(nn.Module):
         modes_t,
         latent_steps=10,
         norm="backward",
-        activation: str = "GELU",
+        activation:str="GELU",
         beta=0.1,
-        pe_channel_expansion=False,
+        spatial_random_feats=False,
         channel_expansion=128,
+        nonlinear=True,
         **kwargs,
     ) -> None:
         """
@@ -243,13 +256,12 @@ class LiftingOperator(nn.Module):
             pe_modes_t = modes_t - 1
 
         self.pe = PositionalEncoding(
-            modes_x // 2,
-            modes_y // 2,
-            pe_modes_t,
+            modes_x//2,
+            modes_y//2,
+            pe_modes_t//2,
             num_channels=width,
             time_exponential_scale=beta,
-            channel_expansion=pe_channel_expansion,
-        )
+            spatial_random_feats=spatial_random_feats,)
 
         in_channels = self.pe.num_channels
         self.norm = LayerNorm3d(in_channels)
@@ -262,13 +274,17 @@ class LiftingOperator(nn.Module):
             norm=norm,
             bias=False,
         )
-        self.nonlinear = getattr(nn, activation)()
-        self.mlp = MLP(width, width, channel_expansion)
-
+        if nonlinear:
+            self.activation = getattr(nn, activation)()
+            self.mlp = MLP(width, width, channel_expansion, activation)
+        else:
+            self.activation = nn.Identity()
+            self.mlp = nn.Conv3d(width, width, kernel_size=1)
+        
     def forward(self, v):
         for b in [self.pe, self.norm, self.proj]:
             v = b(v)
-        v = self.nonlinear(v + self.mlp(self.sconv(v)))
+        v = self.activation(v + self.mlp(self.sconv(v)))
         return v
 
 
@@ -519,6 +535,8 @@ class SFNO(nn.Module):
         spatial_padding: int = 0,
         temporal_padding: bool = True,
         channel_expansion: int = 128,
+        spatial_random_feats: bool = False,
+        lift_activation: bool = True,
         latent_steps: int = 10,
         output_steps: int = None,
         debug=False,
@@ -535,7 +553,7 @@ class SFNO(nn.Module):
 
         1. New lifting operator
             - new PE: since the treatment of grid is different from FNO official code, which give my autograd trouble, new PE is similar to the one used in the Transformers, the time dimension's PE is according to the NSE. The PE occupies the extra channels.
-            - new LayerNorm3d: instead of normalizing the input/output pointwisely when preparing the data like the original FNO did. Tthe normalization prevents to predict arbitrary time steps.
+            - new LayerNorm3d: instead of normalizing the input/output pointwisely when preparing the data like the original FNO did, this makes an input-steps agnostic normalization. Note that the global normalization by mean/std of (n, n, n_t)-shaped tensor in the original FNO3d prevents to predict arbitrary time steps.
             - the channel lifting now works pretty much like the depth-wise conv but uses the globally spectral as FNO does. Since there is no need to treat the time steps as channels now it can accept arbitrary time steps in the input.
         2. new out projection: it maps the latent time steps to a given output time steps using FFT's natural super-resolution.
             - output arbitrary steps.
@@ -576,6 +594,8 @@ class SFNO(nn.Module):
             beta=beta,
             activation=activation,
             channel_expansion=channel_expansion,
+            spatial_random_feats=spatial_random_feats,
+            nonlinear=lift_activation,
         )
 
         act_func = getattr(nn, activation)

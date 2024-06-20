@@ -5,7 +5,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from time import ctime, time
-from typing import Generator
+from typing import Generator, Callable
 
 import numpy as np
 import psutil
@@ -14,10 +14,8 @@ import torch.nn as nn
 
 
 def get_seed(s, quiet=True, cudnn=True, logger=None):
-    # rd.seed(s)
     os.environ["PYTHONHASHSEED"] = str(s)
     np.random.seed(s)
-    # pd.core.common.random_state(s)
     # Torch
     torch.manual_seed(s)
     torch.cuda.manual_seed(s)
@@ -26,32 +24,33 @@ def get_seed(s, quiet=True, cudnn=True, logger=None):
         torch.backends.cudnn.benchmark = False
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(s)
-
-    if not quiet or logger:
-        message = f""""""
+    message = f""""""
+    message += f"""
+    os.environ['PYTHONHASHSEED'] = str({s})
+    numpy.random.seed({s})
+    torch.manual_seed({s})
+    torch.cuda.manual_seed({s})
+    """
+    if cudnn:
         message += f"""
-        os.environ['PYTHONHASHSEED'] = str({s})
-        numpy.random.seed({s})
-        torch.manual_seed({s})
-        torch.cuda.manual_seed({s})
-        """
-        if cudnn:
-            message += f"""
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False"""
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False"""
 
-        if torch.cuda.is_available():
-            message += f"""
-        torch.cuda.manual_seed_all({s})"""
-            
-        if not quiet:
+    if torch.cuda.is_available():
+        message += f"""
+    torch.cuda.manual_seed_all({s})"""
+        
+    if not quiet and not logger:
             print("\n")
             print(f"The following code snippets have been run.")
             print("=" * 50)
             print(message)
             print("=" * 50)
-        if logger:
-            logger.info(message)
+    elif not quiet and logger:
+        logger.info(
+            "The following code snippets have been run:"
+            + " | ".join(message.splitlines())
+        )
 
 
 class Colors:
@@ -190,6 +189,20 @@ def get_num_params(model):
     for p in model_parameters:
         num_params += np.prod(p.size() + (2,) if p.is_complex() else p.size())
     return num_params
+
+
+def get_config(module: nn.Module, quiet=True, logger=None):
+    config = {}
+    _config = filter(lambda x: not x.startswith("_"), dir(module))
+    for a in _config:
+        if not isinstance(getattr(module, a), (Callable, nn.Parameter, torch.Tensor)):
+            config[a] = getattr(module, a)
+    if not quiet and not logger:
+        for k, v in config.items():
+            print(f"{k:<25}: {v}")
+    elif logger:
+        logger.info(f"args of {module.__repr__()}: "+" | ".join(f"{k}={v}" for k, v in config.items()))
+    return config
 
 
 def default(value, d):
