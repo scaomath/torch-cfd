@@ -161,6 +161,9 @@ cython_debug/
 
 # data files
 *.pt
+*.pth
+*.pkl
 
 # mac os
 .DS_Store
+*.code-workspace
