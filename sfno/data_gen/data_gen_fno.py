@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from grf import GRF2d
 from solvers import *
-from data_gen import *
+from data_utils import *
 from sfno.pipeline import DATA_PATH, LOG_PATH
 
 def main(args):

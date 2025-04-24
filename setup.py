@@ -14,8 +14,14 @@ setup(
   keywords = ['pytorch', 'cfd', 'pde', 'spectral', 'fluid dynamics', 'deep learning', 'neural operator'],
   python_requires='>=3.10',
   install_requires=[
-      'numpy>=1.24.0',
+      'numpy>=2.2.0',
       'torch>=2.5.0',
+      'xarray>=2025.3.1',
+      'tqdm>=4.62.0',
+      'einops>=0.8.0',
+      'dill>=0.4.0',
+      'matplotlib>=3.5.0',
+      'seaborn>=0.13.0',
   ],
   classifiers=[
       'Development Status :: 4 - Beta',

@@ -1,30 +1,23 @@
 import argparse
 import logging
 import math
+import os
 import sys
 from collections import defaultdict
-
-import dill
-import numpy as np
-import torch
-import torch.fft as fft
-import torch.nn.functional as F
-import h5py
-import xarray
-
-from solvers import *
-from torch_cfd.equations import *
-import os
 from datetime import datetime
 
+import dill
+import h5py
+
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
-from torch.linalg import norm
+import torch
+import torch.fft as fft
+import xarray
 from tqdm import tqdm
 
 feval = lambda s: eval("lambda x, y:" + s, globals())
-
-TQDM_ITERS = 200
 
 
 class TqdmLoggingHandler(logging.Handler):
@@ -52,278 +45,6 @@ def get_logger(filename, tqdm=True):
         ],
     )
     return logging.getLogger()
-
-
-def interp2d(x, **kwargs):
-    """
-    For Python 3.11, the implementation can be implemented as follows
-    expand_dims = [None] * (4 - x.ndim)
-    x = x[*expand_dims, ...]
-    the following implementation creates the required number of dimensions without unpacking
-    """
-    for _ in range(4 - x.ndim):
-        x = x.unsqueeze(0)
-    return F.interpolate(x, **kwargs).squeeze()
-
-
-def get_trajectory_rk4(
-    equation: ImplicitExplicitODE,
-    w0: Array,
-    dt: float,
-    num_steps: int = 1,
-    record_every_steps: int = 1,
-    pbar=False,
-    pbar_desc="generating trajectories using RK4",
-    require_grad=False,
-    dtype=torch.complex64,
-):
-    """
-    vorticity stacked in the time dimension
-    all inputs and outputs are in the frequency domain
-    input: w0 (*, n, n)
-    output:
-
-    vorticity (*, n_t, kx, ky)
-    psi: (*, n_t, kx, ky)
-
-    velocity can be computed from psi
-    (*, 2, n_t, kx, ky) by calling spectral_rot_2d
-    """
-    w_all = []
-    dwdt_all = []
-    res_all = []
-    psi_all = []
-    w = w0
-    n = w0.size(-1)
-    tqdm_iters = num_steps if TQDM_ITERS > num_steps else TQDM_ITERS
-    update_iters = num_steps // tqdm_iters
-    with tqdm(total=num_steps, disable=not pbar) as pb:
-        for t_step in range(num_steps):
-            w, dwdt = equation.forward(w, dt=dt)
-            w.requires_grad_(require_grad)
-            dwdt.requires_grad_(require_grad)
-
-            if t_step % update_iters == 0:
-                res = equation.residual(w, dwdt)
-                res_ = fft.irfft2(res).real
-                w_ = fft.irfft2(w).real
-                res_norm = norm(res_, dim=(-1, -2)).mean() / n
-                w_norm = norm(w_, dim=(-1, -2)).mean() / n
-                res_desc = f" - ||L(w) - f||_2: {res_norm.item():.4e}"
-                res_desc += f" | vort norm {w_norm.item():.4e}"
-                desc = (
-                    datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-                    + " - "
-                    + pbar_desc
-                    + res_desc
-                )
-                pb.set_description(desc)
-                pb.update(update_iters)
-
-            if t_step % record_every_steps == 0:
-                _, psi = vorticity_to_velocity(equation.grid, w)
-                res = equation.residual(w, dwdt)
-
-                w_, dwdt_, psi, res = [
-                    var.detach().to(dtype).cpu().clone() for var in [w, dwdt, psi, res]
-                ]
-
-                w_all.append(w_)
-                psi_all.append(psi)
-                dwdt_all.append(dwdt_)
-                res_all.append(res)
-
-    result = {
-        var_name: torch.stack(var, dim=-3)
-        for var_name, var in zip(
-            ["vorticity", "stream", "vort_t", "residual"],
-            [w_all, psi_all, dwdt_all, res_all],
-        )
-    }
-    return result
-
-
-def get_trajectory_imex_crank_nicolson(
-    w0,
-    f,
-    visc=1e-3,
-    T=1,
-    delta_t=1e-3,
-    record_steps=1,
-    diam=1,
-    dealias=True,
-    subsample=1,
-    dtype=None,
-    pbar=True,
-    **kwargs,
-):
-    """
-    w0: initial vorticity
-    f: forcing term, fixed for all time-steps
-    visc: viscosity (1/Re)
-    T: final time
-    delta_t: internal time-step for solve (descrease if blow-up)
-    record_steps: number of in-time snapshots to record
-    diam: diameter of the domain by default the domain is (0, diam) x (0, diam)
-    Solving the 2D Navier-Stokes equation
-    vorticity-stream function formulation using Crank-Nicolson scheme
-    output: all in (B, t, n, n)
-        - vorticity, time derivative of vorticity, streamfunction, residual
-    """
-    # Grid size - must be power of 2
-    dtype = w0.dtype if dtype is None else dtype
-    device = w0.device
-    bsz, n = w0.size(0), w0.size(-1)
-    ns = n // subsample
-
-    # Maximum frequency
-    k_max = math.floor(n / 2.0)
-
-    # Number of steps to final time
-    total_steps = math.ceil(T / delta_t)
-
-    # Initial vorticity to Fourier space
-    w_h = fft.rfft2(w0)
-
-    # Forcing to Fourier space
-    f_h = fft.rfft2(f)
-
-    # If same forcing for the whole batch
-    if f_h.ndim < w_h.ndim:
-        f_h = f_h.unsqueeze(0)
-
-    # Delta_steps = Record solution every this number of steps
-    record_every_n_steps = math.floor(total_steps / record_steps)
-
-    # Wavenumbers in y-direction
-    kx = fft.fftfreq(n, d=diam / n, dtype=dtype, device=device)
-    ky = fft.fftfreq(n, d=diam / n, dtype=dtype, device=device)
-    kx, ky = torch.meshgrid([kx, ky], indexing="ij")
-
-    # Truncate redundant modes
-    kx = kx[..., : k_max + 1]
-    ky = ky[..., : k_max + 1]
-    k_max = (1 / diam) * k_max
-
-    # Laplacian in Fourier space
-    lap = -4 * (math.pi**2) * (kx**2 + ky**2)
-    lap[0, 0] = 1.0
-    kx, ky, lap = kx[None, ...], ky[None, ...], lap[None, ...]
-
-    # Dealiasing mask
-    dealias_filter = (
-        torch.unsqueeze(
-            torch.logical_and(
-                torch.abs(kx) <= (2.0 / 3.0) * k_max,
-                torch.abs(ky) <= (2.0 / 3.0) * k_max,
-            )
-            .to(dtype)
-            .to(device),
-            0,
-        )
-        if dealias
-        else 1.0
-    )
-
-    # Saving solution and time
-    size = bsz, record_steps, ns, ns
-    vort, vort_t, stream, residual = [
-        torch.empty(*size, device="cpu") for _ in range(4)
-    ]
-    t_steps = torch.empty(record_steps, device="cpu")
-
-    # Record counter
-    c = 0
-    # Physical time
-    t = 0.0
-
-    # several quantities to track
-    enstrophy = norm(w0, dim=(-1, -2)).mean() / n
-    res = torch.zeros(n, n)  # residual placeholder
-    residualL2 = norm(res, dim=(-1, -2)).mean() / n
-
-    desc = (
-        datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-        + f" - enstrophy w: {enstrophy:.4f} \ "
-        + f"||L(w, psi) - f||_L2: {residualL2:.4e} \ "
-    )
-
-    with tqdm(total=total_steps, desc=desc, disable=not pbar) as pb:
-        for j in range(total_steps):
-
-            w_h, w_h_t, _, psi_h, res_h = imex_crank_nicolson_step(
-                w_h,
-                f_h,
-                visc,
-                delta_t,
-                diam=diam,
-                rfftmesh=(kx, ky),
-                laplacian=lap,
-                dealias_filter=dealias_filter,
-                dealias=dealias,
-                **kwargs,
-            )
-
-            if w_h.isnan().any():
-                w_h = w_h[~torch.isnan(w_h)]
-                raise ValueError(f"Solution diverged with norm {norm(w_h)}")
-                # Id_lap_h = 1.0 + 0.5 * delta_t * visc * lap
-                # print(f"min of I - 0.5 * dt * nu * \hat(Delta_h): {Id_lap_h.abs().min()}")
-
-            # Update real time (used only for recording)
-            t += delta_t
-
-            if (j + 1) % record_every_n_steps == 0:
-                # Solution in physical space
-                w = fft.irfft2(w_h, s=(n, n)).real
-                w_t = fft.irfft2(w_h_t, s=(n, n)).real
-                psi = fft.irfft2(psi_h, s=(n, n)).real
-
-                res_h = update_residual(
-                    w_h,
-                    w_h_t,
-                    f_h,
-                    visc,
-                    (kx, ky),
-                    lap,
-                    dealias_filter=dealias_filter,
-                    dealias=dealias,
-                )
-                res = fft.irfft2(res_h, s=(n, n)).real
-
-                if subsample > 1:
-                    w, w_t, psi, res = (
-                        interp2d(w, size=(ns, ns), mode="bilinear"),
-                        interp2d(w_t, size=(ns, ns), mode="bilinear"),
-                        interp2d(psi, size=(ns, ns), mode="bilinear"),
-                        interp2d(res, size=(ns, ns), mode="bilinear"),
-                    )
-                # Record solution and time
-                vort[:, c] = w.detach().cpu()
-                vort_t[:, c] = w_t.detach().cpu()
-                stream[:, c] = psi.detach().cpu()
-                residual[:, c] = res.detach().cpu()
-                t_steps[c] = t
-
-                c += 1
-                enstrophy = norm(w, dim=(-1, -2)).mean() / n
-                residualL2 = norm(res, dim=(-1, -2)).mean() / n
-                divider = {0: "|", 1: "/", 2: "-", 3: "\\"}
-                desc = (
-                    datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-                    + f" - enstrophy w: {enstrophy:.4f} {divider[c%4]} "
-                    + f" ||L(w, psi) - f||_2: {residualL2:.4e} {divider[c%4]} "
-                )
-                pb.set_description(desc)
-            pb.update()
-
-    return dict(
-        vorticity=vort,
-        vorticity_t=vort_t,
-        stream=stream,
-        residual=residual,
-        t_steps=t_steps,
-    )
 
 
 def get_args(desc="Data generation in 2D"):
@@ -605,6 +326,7 @@ def pickle_to_pt(data_path, save_path=None):
         data[field] = v
 
     torch.save({k: v for k, v in data.items() if not callable(v)}, data_path)
+
 
 def matlab_to_pt(data_path, save_path=None):
     """
