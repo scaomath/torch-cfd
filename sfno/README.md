@@ -26,12 +26,12 @@ Generate the isotropic turbulence in [1] with the inverse cascade frequency sign
 
 - Training dataset:
 ```bash
->>> python data_gen_McWilliams2d.py --num-samples 1152 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
+>>> python data_gen_McWilliams2d.py --num-samples 1152 --batch-size 128 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
 ```
 
 - Testing dataset for plotting the enstrohpy spectrum in the paper
 ```bash
->>> python data_gen_McWilliams2d.py --num-samples 1152 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
+>>> python data_gen_McWilliams2d.py --num-samples 16 --grid-size 256 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
 ```
 
 
@@ -63,3 +63,8 @@ Evaluation for McWilliams2d dataset: note there will be aliasing error caused by
 
 ## Licenses
 This folder has the MIT license. Note: the license(s) in the subfolder takes precedence.
+
+## Acknowledgments
+The research of Brarda and Xi is supported by the National Science Foundation award DMS-2208412. 
+The work of Li was performed under the auspices of
+the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DEAC52-07NA27344 and was supported by the LLNL-LDRD program under Project No. 24ERD033. The research of Cao also is in part supported by the National Science Foundation DMS-2309778.

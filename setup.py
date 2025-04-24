@@ -11,16 +11,17 @@ setup(
   author = 'Shuhao Cao',
   author_email = 'scao.math@gmail.com',
   url = 'https://github.com/scaomath/torch-cfd',
-  keywords = ['pytorch', 'cfd', 'pde', 'spectral'],
+  keywords = ['pytorch', 'cfd', 'pde', 'spectral', 'fluid dynamics', 'deep learning', 'neural operator'],
+  python_requires='>=3.10',
   install_requires=[
-      'numpy',
-      'torch>=2.0.1',
+      'numpy>=1.24.0',
+      'torch>=2.5.0',
   ],
   classifiers=[
       'Development Status :: 4 - Beta',
       'Intended Audience :: Science/Research',
       'Topic :: Scientific/Engineering :: Mathematics',
       'License :: OSI Approved :: Apache Software License',
-      'Programming Language :: Python :: 3.8',
+      'Programming Language :: Python :: 3.10',
   ],
 )

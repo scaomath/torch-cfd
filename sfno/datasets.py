@@ -424,31 +424,27 @@ class BochnerDataset(Dataset):
             for key, val in data.items():
                 data[key] = val.permute(0, 2, 3, 1)
         self.data = data
-        self.data_input = data.clone()
+        self.data_input = data.clone() 
         # this is the transformed data
 
     def __getitem__(self, idx, start_steps=None):
         if start_steps is None:
             if self.T_start is None:
-                start_steps = np.random.randint(
-                    0, self.total_steps - (self.out_steps + self.steps + 1)
-                )
+                start_steps = np.random.randint(0, self.total_steps - (self.out_steps + self.steps + 1))
             else:
                 start_steps = self.T_start
         inp_slice = slice(start_steps, start_steps + self.steps)
-        out_slice = slice(
-            start_steps + self.steps, start_steps + self.steps + self.out_steps
-        )
+        out_slice = slice(start_steps + self.steps, start_steps + self.steps + self.out_steps)
 
         inp = dict()
         out = dict()
         for field in self.fields:
-            inp[field] = self.data_input[field][idx, ..., inp_slice].to(self.dtype)
+            inp[field] = self.data_input[field][idx, ..., inp_slice].to(
+                self.dtype
+            )
             out[field] = self.data[field][idx, ..., out_slice].to(self.dtype)
-        inp["time_steps"] = torch.arange(start_steps, start_steps + self.steps)
-        out["time_steps"] = torch.arange(
-            start_steps + self.steps, start_steps + self.steps + self.out_steps
-        )
+        inp['time_steps'] = torch.arange(start_steps, start_steps+self.steps)
+        out['time_steps'] = torch.arange(start_steps+self.steps, start_steps+self.steps+self.out_steps)
         return inp, out
 
 
@@ -465,13 +461,13 @@ class BochnerDatasetFixed(BochnerDataset):
         out_steps=10,
         inp_normalizer: Union[bool, nn.ModuleDict] = None,
         normalize_space_only: bool = False,
-        out_normalizer=True,
+        out_normalizer= True,
         dtype=torch.float32,
     ):
         """
         BochnerDatasetFixed for the Bochner space-like dataset
         but with fixed time steps used by FNO3d
-        since this pipeline needs
+        since this pipeline needs 
         - add 3d grid to the data
         - add the normalizer
         """
@@ -501,14 +497,12 @@ class BochnerDatasetFixed(BochnerDataset):
         T_start = self.T_start
         steps = self.steps
         T = self.out_steps
-        data_input = self.data_input  # (N, n, n, T)
-        data_out = self.data  # (N, n, n, T)
+        data_input = self.data_input # (N, n, n, T)
+        data_out = self.data # (N, n, n, T)
         for field in self.fields:
-            inp = data_input[field][..., T_start : T_start + steps]
-            self.data_input[field] = inp.permute(0, 3, 1, 2)  # (N, T, n, n)
-            self.data[field] = data_out[field][
-                ..., T_start + steps : T_start + steps + T
-            ]
+            inp = data_input[field][..., T_start : T_start +  steps]
+            self.data_input[field] = inp.permute(0, 3, 1, 2) # (N, T, n, n)
+            self.data[field] = data_out[field][..., T_start + steps: T_start +  steps + T] 
             # output is (N, n, n, T)
 
     def normalize(self, data, normalizer):
@@ -533,22 +527,20 @@ class BochnerDatasetFixed(BochnerDataset):
         return data, normalizer
 
     def _normalize(self):
-        self.data_input, self.inp_normalizer = self.normalize(
-            self.data_input, self.inp_normalizer
-        )
+        self.data_input, self.inp_normalizer = self.normalize(self.data_input, self.inp_normalizer)
         self.data, self.out_normalizer = self.normalize(self.data, self.out_normalizer)
 
     def _add_grid(self):
         """
         preset a 3D PE (3, n, n, T)
         """
-        n, n, n_t = self.data[self.fields[0]].shape[1:]  # output shape
+        n, n, n_t = self.data[self.fields[0]].shape[1:] # output shape
         # (*, n, n, T) T is already the sliced data
         gridx = torch.linspace(0, 1, n, dtype=self.dtype)
         gridy = torch.linspace(0, 1, n, dtype=self.dtype)
         gridt = torch.linspace(0, 1, n_t, dtype=self.dtype)
         gridx, gridy, gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
-        self.grid = torch.stack((gridx, gridy, gridt))  # (3, n, n, T)
+        self.grid = torch.stack((gridx, gridy, gridt)) # (3, n, n, T)
 
     def __getitem__(self, idx):
         inp = dict()

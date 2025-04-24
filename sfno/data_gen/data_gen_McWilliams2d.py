@@ -21,13 +21,27 @@ from torch_cfd.finite_differences import *
 from torch_cfd.forcings import *
 from tqdm import tqdm
 from data_gen import *
-from pipeline import LOG_PATH, DATA_PATH
-
 import logging
+
+from sfno.pipeline import DATA_PATH, LOG_PATH
 
 
 def main(args):
+    """
+    Generate the isotropic turbulence in [1]
 
+    [1]: McWilliams, J. C. (1984). The emergence of isolated coherent vortices in turbulent flow. Journal of Fluid Mechanics, 146, 21-43.
+
+    Training dataset for the SFNO ICLR 2025 paper:
+    >>> python data_gen_McWilliams2d.py --num-samples 1152 --batch-size 128 --grid-size 256 --subsample 4 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
+
+    Testing dataset for plotting the enstrohpy spectrum:
+    >>> python data_gen_McWilliams2d.py --num-samples 16 --batch-size 8 --grid-size 256 --subsample 1 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double
+
+    Training dataset with Re=5k:
+    >>> python data_gen_McWilliams2d.py --num-samples 1152 --batch-size 128 --grid-size 512 --subsample 1 --Re 5e3 --dt 5e-4 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
+
+    """
     args = args.parse_args()
 
     current_time = datetime.now().strftime("%d_%b_%Y_%Hh%Mm")
@@ -38,8 +52,11 @@ def main(args):
 
     total_samples = args.num_samples
     batch_size = args.batch_size  # 128
+    assert batch_size <= total_samples, "batch_size <= num_samples"
+    assert total_samples % batch_size == 0, "total_samples divisible by batch_size"
     n = args.grid_size  # 256
-    viscosity = args.visc
+    viscosity = args.visc if args.Re is None else 1 / args.Re
+    Re = 1 / viscosity
     dt = args.dt  # 1e-3
     T = args.time  # 10
     subsample = args.subsample  # 4
@@ -65,12 +82,11 @@ def main(args):
     record_every_iters = int(total_steps / num_snapshots)
 
     dtype = torch.float64 if args.double else torch.float32
+    cdtype = torch.complex128 if args.double else torch.complex64
     dtype_str = "_fp64" if args.double else ""
     filename = args.filename
     if filename is None:
-        filename = f"McWilliams2d{dtype_str}_{ns}x{ns}_N{total_samples}_v{viscosity:.0e}_T{num_snapshots}.pt".replace(
-            "e-0", "e-"
-        )
+        filename = f"McWilliams2d{dtype_str}_{ns}x{ns}_N{total_samples}_Re{int(Re)}_T{num_snapshots}.pt"
         args.filename = filename
     data_filepath = os.path.join(DATA_PATH, filename)
     if os.path.exists(data_filepath) and not force_rerun:
@@ -86,8 +102,10 @@ def main(args):
     no_tqdm = args.no_tqdm
     device = torch.device("cuda:0" if cuda else "cpu")
 
-    torch.set_default_dtype(dtype)
-    logger.info(f"Using device: {device} | dtype: {dtype}")
+    torch.set_default_dtype(torch.float64)
+    logger.info(
+        f"Using device: {device} | save dtype: {dtype} | compute dtype: {torch.get_default_dtype()}"
+    )
 
     grid = Grid(shape=(n, n), domain=((0, diam), (0, diam)), device=device)
 
@@ -100,12 +118,11 @@ def main(args):
         solver=rk4_crank_nicolson,
     ).to(device)
 
+    num_batches = total_samples // batch_size
     for i, idx in enumerate(range(0, total_samples, batch_size)):
+        logger.info(f"Generate trajectory for batch [{i+1}/{num_batches}]")
         logger.info(
-            f"Generate trajectory for {i+1}-th batch of {total_samples} samples"
-        )
-        logger.info(
-            f"random state: {random_state + idx} to {random_state + idx + batch_size-1}"
+            f"random states: {random_state + idx} to {random_state + idx + batch_size-1}"
         )
 
         vort_init = torch.stack(
@@ -122,7 +139,7 @@ def main(args):
             for j in range(warmup_steps):
                 vort_hat, _ = ns2d.step(vort_hat, dt)
                 if j % 100 == 0:
-                    desc = datetime.now().strftime("%d-%b-%Y %H:%M:%S") + ' - Warmup'
+                    desc = datetime.now().strftime("%d-%b-%Y %H:%M:%S") + " - Warmup"
                     pbar.set_description(desc)
                     pbar.update(100)
 
@@ -133,12 +150,16 @@ def main(args):
             num_steps=total_steps,
             record_every_steps=record_every_iters,
             pbar=not no_tqdm,
+            dtype=cdtype,
         )
 
         for field, value in result.items():
+            logger.info(
+                f"freq variable:  {field:<12} | shape: {value.shape} | dtype: {value.dtype}"
+            )
             value = fft.irfft2(value).real.cpu().to(dtype)
             logger.info(
-                f"variable: {field} | shape: {value.shape} | dtype: {value.dtype}"
+                f"saved variable: {field:<12} | shape: {value.shape} | dtype: {value.dtype}"
             )
             if subsample > 1:
                 result[field] = F.interpolate(value, size=(ns, ns), mode="bilinear")
@@ -148,8 +169,9 @@ def main(args):
         result["random_states"] = torch.tensor(
             [random_state + idx + k for k in range(batch_size)], dtype=torch.int32
         )
-        logger.info(f"Save {i+1}-th batch to {data_filepath}")
+        logger.info(f"Saving batch [{i+1}/{num_batches}] to {data_filepath}")
         save_pickle(result, data_filepath)
+        del result
 
     pickle_to_pt(data_filepath)
     logger.info(f"Done saving.")
@@ -163,8 +185,9 @@ def main(args):
             )
         except Exception as e:
             logger.error(f"Error in plotting: {e}")
+    return 0
 
 
 if __name__ == "__main__":
-    args = get_args()
+    args = get_args("Meta parameters for generating NSE 2d with McWilliams IV")
     main(args)

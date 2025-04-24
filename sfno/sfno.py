@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from torch.nn.init import constant_, xavier_uniform_
-from data import fft_expand_dims, fft_mesh_2d, spectral_div_2d, spectral_grad_2d, spectral_laplacian_2d
+from .data_gen.solvers import fft_expand_dims, fft_mesh_2d, spectral_div_2d, spectral_grad_2d, spectral_laplacian_2d
 
 
 class LayerNorm3d(nn.GroupNorm):

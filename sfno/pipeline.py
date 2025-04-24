@@ -1,13 +1,18 @@
 import os
-try:
-    from .utils import default
-except:
-    from utils import default
+
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+
+
+def default(value, d):
+    """
+    helper taken from https://github.com/lucidrains/linear-attention-transformer
+    """
+    return d if value is None else value
+
 
 current_path = os.path.abspath(__file__)
 SRC_ROOT = os.path.dirname(current_path)
@@ -30,10 +35,15 @@ EPOCH_SCHEDULERS = [
 ]
 
 
-
 def train_batch_ns(
-    model, loss_func, data, optimizer, device, grad_clip=0, fname='vorticity',
-    normalizer=None
+    model,
+    loss_func,
+    data,
+    optimizer,
+    device,
+    grad_clip=0,
+    fname="vorticity",
+    normalizer=None,
 ):
     optimizer.zero_grad()
     a = data[0][fname].to(device)
@@ -53,11 +63,16 @@ def train_batch_ns(
     return loss
 
 
-def eval_epoch_ns(model, metric_func, valid_loader, device, 
-                  fname='vorticity', 
-                  out_steps=None,
-                  normalizer=None,
-                  return_output=False):
+def eval_epoch_ns(
+    model,
+    metric_func,
+    valid_loader,
+    device,
+    fname="vorticity",
+    out_steps=None,
+    normalizer=None,
+    return_output=False,
+):
     model.eval()
     metric_vals = []
     preds = []
@@ -72,14 +87,14 @@ def eval_epoch_ns(model, metric_func, valid_loader, device,
             if normalizer is not None:
                 out = normalizer[fname].inverse_transform(out)
                 u = normalizer[fname].inverse_transform(u)
-            
+
             if return_output:
                 preds.append(out.cpu())
                 targets.append(u.cpu())
 
             metric_val = metric_func(out, u)
             metric_vals.append(metric_val.item())
-    
+
     metric = np.mean(np.asarray(metric_vals), axis=0)
 
     if return_output:

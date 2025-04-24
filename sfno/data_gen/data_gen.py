@@ -5,12 +5,14 @@ import sys
 from collections import defaultdict
 
 import dill
+import numpy as np
 import torch
 import torch.fft as fft
 import torch.nn.functional as F
+import h5py
 import xarray
 
-from data.solvers import *
+from solvers import *
 from torch_cfd.equations import *
 import os
 from datetime import datetime
@@ -53,8 +55,14 @@ def get_logger(filename, tqdm=True):
 
 
 def interp2d(x, **kwargs):
+    """
+    For Python 3.11, the implementation can be implemented as follows
     expand_dims = [None] * (4 - x.ndim)
     x = x[*expand_dims, ...]
+    the following implementation creates the required number of dimensions without unpacking
+    """
+    for _ in range(4 - x.ndim):
+        x = x.unsqueeze(0)
     return F.interpolate(x, **kwargs).squeeze()
 
 
@@ -67,6 +75,7 @@ def get_trajectory_rk4(
     pbar=False,
     pbar_desc="generating trajectories using RK4",
     require_grad=False,
+    dtype=torch.complex64,
 ):
     """
     vorticity stacked in the time dimension
@@ -85,9 +94,10 @@ def get_trajectory_rk4(
     res_all = []
     psi_all = []
     w = w0
+    n = w0.size(-1)
     tqdm_iters = num_steps if TQDM_ITERS > num_steps else TQDM_ITERS
     update_iters = num_steps // tqdm_iters
-    with tqdm(total=num_steps) as pbar:
+    with tqdm(total=num_steps, disable=not pbar) as pb:
         for t_step in range(num_steps):
             w, dwdt = equation.forward(w, dt=dt)
             w.requires_grad_(require_grad)
@@ -97,25 +107,25 @@ def get_trajectory_rk4(
                 res = equation.residual(w, dwdt)
                 res_ = fft.irfft2(res).real
                 w_ = fft.irfft2(w).real
-                res_norm = norm(res_).item()/w0.size(-1)
-                w_norm = norm(w_).item()/w0.size(-1)
-                res_desc = f" - ||L(w) - f||_2: {res_norm:.4e}"
-                res_desc += f" | vort norm {w_norm:.4e}"
+                res_norm = norm(res_, dim=(-1, -2)).mean() / n
+                w_norm = norm(w_, dim=(-1, -2)).mean() / n
+                res_desc = f" - ||L(w) - f||_2: {res_norm.item():.4e}"
+                res_desc += f" | vort norm {w_norm.item():.4e}"
                 desc = (
                     datetime.now().strftime("%d-%b-%Y %H:%M:%S")
                     + " - "
                     + pbar_desc
                     + res_desc
                 )
-                pbar.set_description(desc)
-                pbar.update(update_iters)
+                pb.set_description(desc)
+                pb.update(update_iters)
 
             if t_step % record_every_steps == 0:
                 _, psi = vorticity_to_velocity(equation.grid, w)
                 res = equation.residual(w, dwdt)
 
                 w_, dwdt_, psi, res = [
-                    var.detach().cpu().clone() for var in [w, dwdt, psi, res]
+                    var.detach().to(dtype).cpu().clone() for var in [w, dwdt, psi, res]
                 ]
 
                 w_all.append(w_)
@@ -316,10 +326,8 @@ def get_trajectory_imex_crank_nicolson(
     )
 
 
-def get_args():
-    parser = argparse.ArgumentParser(
-        description="Meta parameters for generating Navier-Stokes data and train"
-    )
+def get_args(desc="Data generation in 2D"):
+    parser = argparse.ArgumentParser(description=desc)
     parser.add_argument(
         "--example",
         type=str,
@@ -332,14 +340,21 @@ def get_args():
         type=int,
         default=256,
         metavar="n",
-        help="grid size (default: 256)",
+        help="grid size (including boundary nodes) in a square domain (default: 256)",
+    )
+    parser.add_argument(
+        "--boundary",
+        type=str,
+        default="periodic",
+        metavar="a",
+        help="boundary type: periodic, dirichlet, neumann",
     )
     parser.add_argument(
         "--subsample",
         type=int,
-        default=4,
+        default=1,
         metavar="s",
-        help="subsample (default: 4)",
+        help="subsample (default: 1)",
     )
     parser.add_argument(
         "--diam",
@@ -375,6 +390,13 @@ def get_args():
         help="viscosity in front of Laplacian, 1/Re (default: 0.001)",
     )
     parser.add_argument(
+        "--Re",
+        type=float,
+        default=None,
+        metavar="Reynolds number",
+        help="Re (default: None)",
+    )
+    parser.add_argument(
         "--time",
         type=float,
         default=20.0,
@@ -406,20 +428,20 @@ def get_args():
         "--normalize",
         action="store_true",
         default=False,
-        help="use normalized GRF in IV",
+        help="use normalized GRF in IV to have L2 norm = 1 (default: False)",
     )
     parser.add_argument(
         "--double",
         action="store_true",
         default=False,
-        help="use double precision torch",
+        help="use double precision torch to save data",
     )
     parser.add_argument(
         "--alpha",
         type=float,
         default=2.5,
         metavar="alpha",
-        help="smoothness of the GRF (default: 2.5)",
+        help="smoothness of the GRF, spatial covariance (default: 2.5)",
     )
     parser.add_argument(
         "--tau",
@@ -427,6 +449,20 @@ def get_args():
         default=7.0,
         metavar="tau",
         help="strength of diagonal regularizer in the covariance (default: 7.0)",
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=1e-2,
+        metavar="eps",
+        help="singular coefficient in -eps*\Delta u + gamma*u= f",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.0,
+        metavar="eps",
+        help="L2 coefficient in elliptic problem or NSE (drag) (default: 0.0)",
     )
     parser.add_argument(
         "--forcing",
@@ -511,6 +547,12 @@ def get_args():
         help="plot several trajectories for the generated data",
     )
     parser.add_argument(
+        "--verify-data",
+        action="store_true",
+        default=False,
+        help="verify the generated data shape, device",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=1127825,
@@ -528,6 +570,11 @@ def save_pickle(data, save_path, append=True):
 
 
 def load_pickle(load_path, mode="rb"):
+    """
+    convert serialized data from pickle to pytorch pt file
+    using dill instead of pickle
+    https://stackoverflow.com/a/28745948/622119
+    """
     data = []
     with open(load_path, mode=mode) as f:
         try:
@@ -540,9 +587,8 @@ def load_pickle(load_path, mode="rb"):
 
 def pickle_to_pt(data_path, save_path=None):
     """
-    convert serialized data from pickle to pytorch pt file
-    using dill instead of pickle
-    https://stackoverflow.com/a/28745948/622119
+    Change: defaultdict or list is deemed not safe for serialization in PyTorch 2.6.0
+    a workaround is to create a new dict after serialization
     """
     save_path = data_path.replace(".pkl", ".pt") if save_path is None else save_path
     result = load_pickle(data_path)
@@ -554,11 +600,26 @@ def pickle_to_pt(data_path, save_path=None):
 
     for field, value in data.items():
         v = torch.cat(value)
-        if v.ndim == 1: # time steps or seed
+        if v.ndim == 1:  # time steps or seed
             v = torch.unique(v)
         data[field] = v
 
-    torch.save(data, data_path)
+    torch.save({k: v for k, v in data.items() if not callable(v)}, data_path)
+
+def matlab_to_pt(data_path, save_path=None):
+    """
+    Convert MATLAB .mat files to PyTorch .pt files.
+    """
+    save_path = data_path.replace(".mat", ".pt") if save_path is None else save_path
+    with h5py.File(data_path, "r") as f:
+        mat_data = {key: np.array(f[key]) for key in f.keys()}
+
+    data = defaultdict(list)
+    for key, value in mat_data.items():
+        value = np.transpose(value, axes=range(len(value.shape) - 1, -1, -1))
+        data[key] = torch.from_numpy(value)
+
+    torch.save({k: v for k, v in data.items() if not callable(v)}, data_path)
 
 
 def verify_trajectories(

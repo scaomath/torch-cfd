@@ -10,8 +10,31 @@ import torch.nn.functional as F
 from grf import GRF2d
 from solvers import *
 from data_gen import *
+from sfno.pipeline import DATA_PATH, LOG_PATH
 
 def main(args):
+    """
+    Generate the original FNO data
+    the right hand side is a fixed forcing
+    0.1*(torch.sin(2*math.pi*(x+y))+torch.cos(2*math.pi*(x+y)))
+
+    It stores data after each batch, and will resume using a fixed formula'd seed
+    when starting again.
+    The default values of the params for the Gaussian Random Field (GRF) are printed.
+
+    Sample usage:
+
+    - Training data for Spectral-Refiner ICLR 2025 paper 'fnodata_extra_64x64_N1280_v1e-3_T50_steps100_alpha2.5_tau7.pt'
+    >>> python data_gen_fno.py --num-samples 1280 --batch-size 256 --grid-size 256 --subsample 4 --extra-vars --time 50 --time-warmup 30 --num-steps 100 --dt 1e-3 --visc 1e-3
+
+    - Test data
+    >>> python data_gen_fno.py --num-samples 16 --batch-size 8 --grid-size 256 --subsample 1 --double --extra-vars --time 50 --time-warmup 30 --num-steps 100 --dt 1e-3 --replicable-init --seed 42
+
+    - Test data fine
+    >>> python data_gen_fno.py --num-samples 2 --batch-size 1 --grid-size 512 --subsample 1 --double --extra-vars --time 50 --time-warmup 30 --num-steps 200 --dt 5e-4 --replicable-init --seed 42
+
+    """
+
     args = args.parse_args()
 
     current_time = datetime.now().strftime("%d_%b_%Y_%Hh%Mm")
@@ -28,7 +51,7 @@ def main(args):
     logger.info(" | ".join(f"{k}={v}" for k, v in all_args.items()))
 
     n_grid_max = 2048
-    n = args.grid_size  # 26
+    n = args.grid_size  # 256
     subsample = args.subsample  # 4
     ns = n // subsample
     diam = args.diam  # 1.0
@@ -37,7 +60,7 @@ def main(args):
         raise ValueError(
             f"Grid size {n} is larger than the maximum allowed {n_grid_max}"
         )
-    visc = args.visc  # 1e-3
+    visc = args.visc if args.Re is None else 1/args.Re # 1e-3
     T = args.time  # 50
     T_warmup = args.time_warmup  # 30
     T_new = T - T_warmup
@@ -53,10 +76,11 @@ def main(args):
     replicate_init = args.replicable_init
     dealias = not args.no_dealias
     pbar = not args.no_tqdm
-    torch.set_default_dtype(dtype)
+    torch.set_default_dtype(torch.float64)
+    logger.info(f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}")
 
     # Number of solutions to generate
-    N_samples = args.num_samples  # 8
+    total_samples = args.num_samples  # 8
 
     # Number of snapshots from solution
     record_steps = args.num_steps
@@ -74,7 +98,7 @@ def main(args):
     dtype_str = "_fp64" if args.double else ""
     if filename is None:
         filename = (
-            f"fnodata{extra}{dtype_str}_{ns}x{ns}_N{N_samples}" 
+            f"fnodata{extra}{dtype_str}_{ns}x{ns}_N{total_samples}" 
             + f"_v{visc:.0e}_T{int(T)}_steps{record_steps}_alpha{alpha:.1f}_tau{tau:.0f}.pt"
         ).replace("e-0", "e-")
         args.filename = filename
@@ -90,16 +114,16 @@ def main(args):
     if data_exist and not force_rerun:
         logger.info(f"File {filename} exists with current data as follows:")
         data = torch.load(data_filepath)
-
+        
         for key, v in data.items():
             if isinstance(v, torch.Tensor):
                 logger.info(f"{key:<12} | {v.shape} | {v.dtype}")
             else:
                 logger.info(f"{key:<12} | {v.dtype}")
-        if len(data[key]) == N_samples:
+        if len(data[key]) == total_samples:
             return
-        elif len(data[key]) < N_samples:
-            N_samples -= len(data[key])
+        elif len(data[key]) < total_samples:
+            total_samples -= len(data[key])
     else:
         logger.info(f"Generating data and saving in {filename}")
 
@@ -133,11 +157,10 @@ def main(args):
     else:
         logger.info(f"Save data to {data_filepath}")
 
-    for i, idx in enumerate(range(0, N_samples, batch_size)):
-        logger.info(
-            f"Generate trajectory for {i+1}-th batch of {N_samples} samples"
-        )
-        logger.info(f"random state: {args.seed + idx} to {args.seed + idx + batch_size-1}")
+    num_batches = total_samples // batch_size
+    for i, idx in enumerate(range(0, total_samples, batch_size)):
+        logger.info(f"Generate trajectory for batch [{i+1}/{num_batches}]")
+        logger.info(f"random states: {args.seed + idx} to {args.seed + idx + batch_size-1}")
 
         # Sample random fields
         seeds = [args.seed + idx + k for k in range(batch_size)]
@@ -188,8 +211,9 @@ def main(args):
                 result[key] = torch.empty(0, device="cpu")
         result["random_states"] = torch.as_tensor(seeds, dtype=torch.int32)
 
-        logger.info(f"Saving {i+1}-th batch to {data_filepath}")
+        logger.info(f"Saving batch [{i+1}/{num_batches}] to {data_filepath}")
         save_pickle(result, data_filepath)
+        del result
 
     pickle_to_pt(data_filepath)
     logger.info(f"Done converting to pt.")
@@ -209,5 +233,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = get_args()
+    args = get_args("Generate the original FNO data for NSE in 2D")
     main(args)

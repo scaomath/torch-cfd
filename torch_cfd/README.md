@@ -7,6 +7,13 @@
 
 ## Changelog
 
+### 0.0.8
+- Starting from PyTorch 2.6.0, if data are saved using serialization (for loop with `pickle` or `dill`), then `torch.load` will raise an error, if you want to load the data, you can either add this in the imports or re-generate the data using this version.
+    ```python
+    torch.serialization.add_safe_globals([defaultdict])
+    torch.serialization.add_safe_globals([list])
+    ```
+
 ### 0.0.6
 - Minor changes in function names, added `sfno` directory and moved `get_trajectory_imex` and `get_trajectory_rk4` to the data generation folder.
 

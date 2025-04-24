@@ -19,7 +19,7 @@ try:
     from .sfno import OutConv, SpectralConvT
 except:
     from sfno import OutConv, SpectralConvT
-from data.solvers import *
+from data_gen.solvers import *
 from einops import rearrange, repeat
 
 
