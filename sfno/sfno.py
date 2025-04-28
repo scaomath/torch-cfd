@@ -545,9 +545,8 @@ class SFNO(nn.Module):
         super().__init__()
 
         """
-        The overall network reimplemented for scalar field of NSE-like equations
-
-        It contains num_spectral_layers (=4 by default) layers of the Fourier layer.
+        The overall network reimplemented to model (2+1)D spatiotemporal PDEs of 
+        a scalar field/vector fields of NSE-like equations.
 
         Major architectural differences:
 
@@ -562,13 +561,27 @@ class SFNO(nn.Module):
         3. n layers of the integral operators u' = (W + K)(u).
             W defined by self.w; K defined by self.conv.
 
-        Several key hyper-params that is different from FNO3d:
+        Hyper-params:
+        - mode_x, mode_y, mode_t: the number of Fourier modes in the x, y, t dimensions
+        - width: the number of channels in the latent space   
+        - num_spectral_layers: the number of spectral conv layers, the first layer is in the lifting operator  
+        - spatial_padding: the padding size in the spatial dimensions
+        - temporal_padding: whether to pad the temporal dimension, by default it is True, recommended to keep it True to avoid aliasing error
+        - out_steps: the number of output time steps, if None, it will be set to the temporal dimension of the input
+        - activation: the activation function, users provide string that directly pulls from nn. default: ReLU
+        - lift_activation: whether to use activation in the lifting operator
+        - spatial_random_feats: whether to use spatial random features in the lifting operator
+        - channel_expansion: the number of channels in the MLP, default: 128
+
+        Grid information:
+        - diam: the diameter of the domain, only used in the Helmholtz decomposition
+        - n_grid: the grid size of the training data, only needed for building the fft mesh for the Helmholtz decompostion, in the forward pass the size is arbitrary (if different from the n_grid, Helmholtz layer will re-build the fft mesh, which introduces a tiny overhead)
         
+        Several key hyper-params that is different from FNO3d:
         - beta: the exponential scaling factor for the time PE, ideally it should match the a priori estimate the energy of the NSE
         - delta: the strength of the final skip-connection.
         - latent steps: the number of time steps in the hidden layers, this is independent of the input/output steps; chosing it >= 3/2 of input length is similar to zero padding of FFT to avoid aliasing due to non-periodic in the temporal dimension
-        - n_grid: the grid size of the training data, only needed for building the fft mesh for the Helmholtz decompostion, in the forward pass the size is arbitrary (if different from the n_grid, Helmholtz layer will re-build the fft mesh, which introduces a tiny overhead)
-        - dim_reduction: 1 for vorticity, 2 for velocity
+        - dim_reduction: 1 for scalar field such as vorticity, 2 for vector field such as velocity
 
         input: w(x, y, t) in the shape of (bsz, x, y, t)
         output: w(x, y, t) in the shape of (bsz, x, y, t)

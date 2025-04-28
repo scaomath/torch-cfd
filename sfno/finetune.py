@@ -15,10 +15,7 @@ import torch
 import torch.fft as fft
 import torch.nn as nn
 
-try:
-    from .sfno import OutConv, SpectralConvT
-except:
-    from sfno import OutConv, SpectralConvT
+from .sfno import OutConv, SpectralConvT
 from data_gen.solvers import *
 from einops import rearrange, repeat
 

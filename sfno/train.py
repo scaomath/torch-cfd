@@ -19,7 +19,7 @@ import torch.nn.functional as F
 
 from utils import *
 from pipeline import *
-from data import *
+from data_gen import *
 from datasets import BochnerDataset
 from losses import SobolevLoss
 import matplotlib.pyplot as plt

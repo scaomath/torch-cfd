@@ -1,6 +1,13 @@
 """
 minor modification from the original FNO3d code:
+Note: the original code is from the master branch of the neural operator repo
+However, as of Aug 2024, the master branch has been deleted by the maintainers.
 https://github.com/neuraloperator/neuraloperator/blob/master/fourier_3d.py
+For an unchanged fork please 
+https://github.com/scaomath/fourier_neural_operator/blob/master/fourier_3d.py
+which is update-to-date till the commit de514f2 with shasum
+de514f2adc0de483f99253d9c6630e1fb6e653f1
+https://github.com/scaomath/fourier_neural_operator/commit/de514f2adc0de483f99253d9c6630e1fb6e653f1
 """
 
 import torch
