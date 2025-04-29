@@ -1,4 +1,5 @@
-# Spatiotemporal Fourier Neural Operator
+# Spatiotemporal Fourier Neural Operator (SFNO)
+This is a new concise implementation of the Fourier Neural Operator see [`base.py`](./base.py#L172) for a template class.
 
 ## Learning maps between Bochner spaces
 SFNO now can learn a `trajectory-to-trajectory` map that inputs arbitrary-length trajectory, and outputs arbitrary-lengthed trajectory (if length is not specified, then the output length is the same with the input).
@@ -36,6 +37,13 @@ Generate the isotropic turbulence in [1] with the inverse cascade frequency sign
 
 
 ## Training and evaluation scripts
+
+
+### Testing the arbitrary input and output discretization sizes (including time)
+Run the part below `__name__ == "__main__"` in [`sfno.py`](sfno.py)
+```bash
+>>> python fno/sfno.py
+```
 
 ### FNO NSE dataset
 Train SFNO for the FNO dataset:

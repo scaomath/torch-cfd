@@ -8,64 +8,21 @@
 # THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
-from copy import deepcopy
-
-from functools import partial
-
 import torch
-import torch.fft as fft
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from torch.nn.init import constant_, xavier_uniform_
-from .data_gen.solvers import fft_expand_dims, fft_mesh_2d, spectral_div_2d, spectral_grad_2d, spectral_laplacian_2d
+from base import *
+from data_gen.solvers import (
+    fft_expand_dims,
+    fft_mesh_2d,
+    spectral_div_2d,
+    spectral_grad_2d,
+    spectral_laplacian_2d,
+)
 
 
-class LayerNorm3d(nn.GroupNorm):
-    """
-    a wrapper for GroupNorm
-    https://pytorch.org/docs/stable/generated/torch.nn.GroupNorm.html
-    input and output shapes: (bsz, C, *)
-    * can be (H, W) or (H, W, T)
-    """
-
-    def __init__(
-        self, 
-        num_channels, 
-        eps=1e-07, 
-        elementwise_affine=True, 
-        device=None, 
-        dtype=None
-    ):
-        super().__init__(
-            num_groups=1,
-            num_channels=num_channels,
-            eps=eps,
-            affine=elementwise_affine,
-            device=device,
-            dtype=dtype,
-        )
-
-    def forward(self, x: torch.Tensor):
-        return super().forward(x)
-
-
-class MLP(nn.Module):
-    def __init__(
-        self, in_channels, out_channels, mid_channels, activation: str = "ReLU"
-    ):
-        super().__init__()
-        self.mlp1 = nn.Conv3d(in_channels, mid_channels, 1)
-        self.mlp2 = nn.Conv3d(mid_channels, out_channels, 1)
-        self.activation = getattr(nn, activation)()
-
-    def forward(self, v):
-        for block in [self.mlp1, self.activation, self.mlp2]:
-            v = block(v)
-        return v
-
-
-class PositionalEncoding(nn.Module):
+class SpaceTimePositionalEncoding(nn.Module):
     """
     https://pytorch.org/tutorials/beginner/transformer_tutorial.html
     a modified sinosoidal PE inspired from the Transformers
@@ -77,7 +34,7 @@ class PositionalEncoding(nn.Module):
     """
 
     def __init__(
-        self, 
+        self,
         modes_x: int = 16,
         modes_y: int = 16,
         modes_t: int = 5,
@@ -90,7 +47,7 @@ class PositionalEncoding(nn.Module):
     ):
         super().__init__()
         assert num_channels % 2 == 0 and num_channels > 3
-        self.num_channels = num_channels # the Euclidean coords
+        self.num_channels = num_channels  # the Euclidean coords
         self.max_time_steps = max_time_steps
         self.time_exponential_scale = time_exponential_scale
         self.modes_x = modes_x
@@ -100,11 +57,10 @@ class PositionalEncoding(nn.Module):
         self._pe = self._pe_expanded if spatial_random_feats else self._pe
         self._pe(*input_shape)
         if spatial_random_feats:
-            in_chan = modes_x * modes_y * modes_t + 3
+            in_chan = modes_x * modes_y * modes_t + 3  # 3 is spatial temporal coords
             self.proj = nn.Conv3d(in_chan, num_channels, kernel_size=1)
         else:
             self.proj = nn.Identity()
-        
 
     def _pe_expanded(self, *shape):
         nx, ny, nt = shape
@@ -133,10 +89,10 @@ class PositionalEncoding(nn.Module):
         self.pe = pe
 
     def _pe(self, *shape):
-        nx, ny, nt = shape  
+        nx, ny, nt = shape
         gridx = torch.linspace(0, 1, nx)
         gridy = torch.linspace(0, 1, ny)
-        gridt = torch.linspace(0, 1, self.max_time_steps+1)[1:nt+1]
+        gridt = torch.linspace(0, 1, self.max_time_steps + 1)[1 : nt + 1]
         gridx, gridy, _gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
         pe = [gridx, gridy, _gridt]
         for k in range(self.num_channels - 3):
@@ -241,11 +197,11 @@ class LiftingOperator(nn.Module):
         modes_t,
         latent_steps=10,
         norm="backward",
-        activation:str="GELU",
-        beta=0.1,
-        spatial_random_feats=False,
-        channel_expansion=128,
-        nonlinear=True,
+        activation: str = "GELU",
+        beta: float = 0.1,
+        spatial_random_feats: bool = False,
+        channel_expansion: int = 4,
+        nonlinear: bool = True,
         **kwargs,
     ) -> None:
         """
@@ -254,17 +210,20 @@ class LiftingOperator(nn.Module):
         super().__init__()
         if modes_t % 2 != 0:
             pe_modes_t = modes_t - 1
+        else:
+            pe_modes_t = modes_t
 
-        self.pe = PositionalEncoding(
-            modes_x//2,
-            modes_y//2,
-            pe_modes_t//2,
+        self.pe = SpaceTimePositionalEncoding(
+            modes_x // 2,
+            modes_y // 2,
+            pe_modes_t // 2,
             num_channels=width,
             time_exponential_scale=beta,
-            spatial_random_feats=spatial_random_feats,)
+            spatial_random_feats=spatial_random_feats,
+        )
 
         in_channels = self.pe.num_channels
-        self.norm = LayerNorm3d(in_channels)
+        self.norm = LayerNormnd(in_channels)
         self.proj = nn.Conv3d(in_channels, width, kernel_size=1)
 
         conv_size = [width, width, modes_x, modes_y, modes_t]
@@ -276,15 +235,15 @@ class LiftingOperator(nn.Module):
         )
         if nonlinear:
             self.activation = getattr(nn, activation)()
-            self.mlp = MLP(width, width, channel_expansion, activation)
+            self.mlp = MLP(width, width, channel_expansion * width, activation)
         else:
             self.activation = nn.Identity()
             self.mlp = nn.Conv3d(width, width, kernel_size=1)
-        
+
     def forward(self, v):
         for b in [self.pe, self.norm, self.proj]:
             v = b(v)
-        v = self.activation(v + self.mlp(self.sconv(v)))
+        v = self.activation(v[..., -1:] + self.mlp(self.sconv(v)))
         return v
 
 
@@ -354,7 +313,7 @@ class OutConv(nn.Module):
         return v.squeeze(1)
 
 
-class SpectralConvS(nn.Module):
+class SpectralConvS(SpectralConv):
     def __init__(
         self,
         in_channels,
@@ -362,71 +321,46 @@ class SpectralConvS(nn.Module):
         modes_x,
         modes_y,
         modes_t,
+        dim=3,
         bias=False,
         delta: float = 1,
         norm="backward",
     ) -> None:
-        super().__init__()
+        super().__init__(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            modes=(modes_x, modes_y, modes_t),
+            dim=dim,
+            bias=bias,
+            norm=norm,
+        )
 
         """
         Spacetime Fourier layer. 
         FFT, linear transform, and Inverse FFT.  
         focusing on space
+        see base.py for the boilerplate  
         """
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
         self.modes_x = modes_x
         self.modes_y = modes_y
         self.modes_t = modes_t
-        self.bias = bias
-        size = [in_channels, out_channels, modes_x, modes_y, modes_t, 2]
-        gain = 0.5 / (in_channels * out_channels)
-        self._initialize_weights(size, gain)
-
-        self.fft = partial(fft.rfftn, dim=(-3, -2, -1), norm=norm)
-        self.ifft = partial(fft.irfftn, dim=(-3, -2, -1), norm=norm)
         self.delta = delta
 
-    def _initialize_weights(self, size, gain=1e-4):
-        self.weight = nn.ParameterList(
-            [nn.Parameter(gain * torch.rand(*size)) for _ in range(4)]
-        )
-        if self.bias:
-            self.bias = nn.ParameterList(
-                [
-                    nn.Parameter(
-                        gain
-                        * torch.zeros(
-                            *size[2:],
-                        )
-                    )
-                    for _ in range(4)
-                ]
-            )
+    # @staticmethod
+    # def complex_matmul(x, w):
+    #     # (b, c_i, x, y, t), (c_i, c_o, x, y, t)  -> (b, c_o, x, y, t)
+    #     return torch.einsum("bixyt,ioxyt->boxyt", x, w)
 
-    def _reset_parameters(self, gain=1e-6):
-        for name, param in self.named_parameters():
-            if "bias" in name:
-                constant_(param, 0.0)
-            else:
-                xavier_uniform_(param, gain)
-
-    @staticmethod
-    def complex_matmul_3d(inp, weights):
-        # (b, c_i, x,y,t), (c_i, c_o, x,y,t)  -> (b, c_o, x,y,t)
-        weights = torch.view_as_complex(weights)
-        return torch.einsum("bixyz,ioxyz->boxyz", inp, weights)
-
-    def spectral_conv(self, vh, nx: int, ny: int, nt: int):
+    def spectral_conv(self, vh, kx: int, ky: int, kt: int):
         """
+        kx, ky, kt: the number of modes in the input
         matmul the weights with the input
         user defined dimensions
         in the space focused conv
         assert nt <= modes_t not explicitly checked
         """
         bsz = vh.size(0)
-        sizes = (bsz, self.out_channels, nx, ny, nt)
+        sizes = (bsz, self.out_channels, kx, ky, kt)
         out = torch.zeros(
             *sizes,
             dtype=vh.dtype,
@@ -437,20 +371,16 @@ class SpectralConvS(nn.Module):
         st = slice(0, self.modes_t)
         for ix, sx in enumerate(slice_x):
             for iy, sy in enumerate(slice_y):
-                out[..., sx, sy, st] = self.complex_matmul_3d(
-                    vh[..., sx, sy, st], self.weight[ix + 2 * iy]
+                out[..., sx, sy, st] = self.complex_matmul(
+                    vh[..., sx, sy, st], torch.view_as_complex(self.weight[ix + 2 * iy])
                 )
                 if self.bias:
                     _bias = self.bias[ix + 2 * iy][None, None, ...]
                     out[..., sx, sy, st] += self.delta * torch.view_as_complex(_bias)
         return out
 
-    def forward(self, v):
-        *_, nx, ny, nt = v.size()
-        v_hat = self.fft(v)
-        v_hat = self.spectral_conv(v_hat, nx, ny, nt // 2 + 1)
-        v = self.ifft(v_hat, s=(nx, ny, nt))
-        return v
+    def forward(self, v, **kwargs):
+        return super().forward(v, **kwargs)
 
 
 class SpectralConvT(SpectralConvS):
@@ -517,24 +447,22 @@ class SpectralConvT(SpectralConvS):
         return v
 
 
-class SFNO(nn.Module):
+class SFNO(FNO):
     def __init__(
         self,
         modes_x,
         modes_y,
         modes_t,
         width,
-        beta: float = -1e-2,
-        delta: float = 1e-1,
-        diam: float = 1,
-        n_grid: int = 64,
-        dim_reduction: int = 1,
+        out_dim: int = 1,
+        beta=-1e-2,
+        delta=1e-1,
         num_spectral_layers: int = 4,
-        fft_norm: str = "backward",
+        fft_norm="backward",
         activation: str = "ReLU",
         spatial_padding: int = 0,
         temporal_padding: bool = True,
-        channel_expansion: int = 128,
+        channel_expansion: int = 4,
         spatial_random_feats: bool = False,
         lift_activation: bool = True,
         latent_steps: int = 10,
@@ -542,7 +470,17 @@ class SFNO(nn.Module):
         debug=False,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(
+            num_spectral_layers=num_spectral_layers,
+            fft_norm=fft_norm,
+            activation=activation,
+            spatial_padding=spatial_padding,
+            channel_expansion=channel_expansion,
+            spatial_random_feats=spatial_random_feats,
+            lift_activation=lift_activation,
+            debug=debug,
+            **kwargs,
+        )
 
         """
         The overall network reimplemented to model (2+1)D spatiotemporal PDEs of 
@@ -591,13 +529,23 @@ class SFNO(nn.Module):
         self.modes_y = modes_y
         self.modes_t = modes_t
         self.width = width
-        self.spatial_padding = (
-            spatial_padding  # pad the domain if input is non-periodic in space
-        )
-        assert num_spectral_layers > 1
-        num_spectral_layers -= 1  # the lifting operator has already an sconv
 
-        self.p = LiftingOperator(
+        assert num_spectral_layers > 1
+        num_spectral_layers -= 1
+        # the lifting operator has already an sconv
+
+        self._set_spectral_layers(
+            num_spectral_layers,
+            [modes_x, modes_y, modes_t],
+            width,
+            spectral_conv=SpectralConvS,
+            mlp=MLP,
+            linear=nn.Conv3d,
+            activation=activation,
+            channel_expansion=channel_expansion,
+        )
+
+        self.lifting_operator = LiftingOperator(
             width,
             modes_x,
             modes_y,
@@ -606,72 +554,34 @@ class SFNO(nn.Module):
             norm=fft_norm,
             beta=beta,
             activation=activation,
-            channel_expansion=channel_expansion,
             spatial_random_feats=spatial_random_feats,
+            channel_expansion=channel_expansion,
             nonlinear=lift_activation,
         )
 
-        act_func = getattr(nn, activation)
-
-        for attr, module, args in zip(
-            ["spectral_conv", "mlp", "w", "activations"],
-            [SpectralConvS, MLP, nn.Conv3d, act_func],
-            [
-                (width, width, modes_x, modes_y, modes_t),
-                (width, width, channel_expansion, activation),
-                (width, width, 1),
-                (),
-            ],
-        ):
-            setattr(
-                self, attr, self._get_modulelist(module, num_spectral_layers, *args)
-            )
-
-        self.r = nn.Conv3d(width, dim_reduction, kernel_size=1)
-        self.q = OutConv(
+        self.output_operator = OutConv(
             modes_x,
             modes_y,
             modes_t,
+            out_dim=out_dim,
             delta=delta,
-            diam=diam,
-            n_grid=n_grid,
             out_steps=output_steps,
-            dim_reduction=dim_reduction,
             spatial_padding=spatial_padding,
             temporal_padding=temporal_padding,
             norm=fft_norm,
         )
+
+        self.reduction = nn.Conv3d(width, 1, kernel_size=1)
         self.out_steps = output_steps
         self.debug = debug
 
-    @staticmethod
-    def _get_modulelist(module: nn.Module, num_layers, *args):
-        return nn.ModuleList([deepcopy(module(*args)) for _ in range(num_layers)])
+    @property
+    def set_lifting_operator(self):
+        return self.lifting_operator
 
-    latent_tensors = {}
-
-    def add_latent_hook(self, layer_name: str):
-        def _get_latent_tensors(name):
-            def hook(model, input, output):
-                self.latent_tensors[name] = output.detach()
-
-            return hook
-
-        module = getattr(self, layer_name)
-
-        if hasattr(module, "__iter__"):
-            for k, b in enumerate(module):
-                b.register_forward_hook(_get_latent_tensors(f"{layer_name}_{k}"))
-        else:
-            module.register_forward_hook(_get_latent_tensors(layer_name))
-
-    def double(self):
-        for param in self.parameters():
-            if param.dtype == torch.float32:
-                param.data = param.data.to(torch.float64)
-            elif param.dtype == torch.complex64:
-                param.data = param.data.to(torch.complex128)
-        return self
+    @property
+    def set_output_operator(self):
+        return self.output_operator
 
     def forward(self, v, out_steps=None):
         """
@@ -682,19 +592,21 @@ class SFNO(nn.Module):
             out_steps = self.out_steps if self.out_steps is not None else v.size(-1)
         v_res = v  # save skip connection
         v = rearrange(v, "b x y t -> b 1 x y t")
-        v = self.p(v)  # [b, 1, n, n, T] -> [b, H, n, n, T]
+        v = self.lifting_operator(v)  # [b, 1, x, y, T] -> [b, H, x, y, T]
 
         for conv, mlp, w, nonlinear in zip(
             self.spectral_conv, self.mlp, self.w, self.activations
         ):
-            x1 = conv(v)  # (b,C,x,y,t)
-            x1 = mlp(x1)  # conv3d (N, C_{in}, D, H, W) -> (N, C_{out}, D, H, W)
+            x1 = conv(v)  # (b,H,x,y,t)
+            x1 = mlp(x1)  # conv3d (b, H, x, y, t) -> (b, H, x, y, t)
             x2 = w(v)
             v = x1 + x2
             v = nonlinear(v)
 
-        v = self.r(v)  # (b, c, x, y, t) -> (b, 1, x, y, t)
-        v = self.q(v, v_res, out_steps=out_steps)  # (b,1,x,y,t) -> (b,x,y,t)
+        v = self.reduction(v)  # (b, H, x, y, t) -> (b, 1, x, y, t)
+        v = self.output_operator(
+            v, v_res, out_steps=out_steps
+        )  # (b,1,x,y,t) -> (b,x,y,t)
         return v
 
 
@@ -717,19 +629,35 @@ if __name__ == "__main__":
         """
         summary(model, input_size=(bsz, *sizes[-1]))
     except:
-        from utils import get_num_params
-
-        print(get_num_params(model))
+        raise ImportError(
+            "torchinfo is not installed, please install it to get the model summary"
+        )
     del model
 
     print("\n" * 3)
-    for k, size in enumerate(sizes[:-1]):
+    for k, size in enumerate(sizes):
         torch.cuda.empty_cache()
         model = SFNO(modes, modes, modes_t, width).to(device)
         model.add_latent_hook("activations")
         x = torch.randn(bsz, *size).to(device)
-        pred, *_ = model(x)
-        print(f"\n\noutput shape: {list(pred.size())}")
+        pred = model(x)
+        print(f"\n\ninput shape:  {list(x.size())}")
+        print(f"output shape: {list(pred.size())}")
         for k, v in model.latent_tensors.items():
             print(k, list(v.shape))
         del model
+
+    print("\n")
+    # test evaluation speed
+    from time import time
+
+    torch.cuda.empty_cache()
+    model = SFNO(modes, modes, modes_t, width).to(device)
+    model.eval()
+    x = torch.randn(bsz, *sizes[1]).to(device)
+    start_time = time()
+    for _ in range(100):
+        pred = model(x)
+    end_time = time()
+    print(f"Average eval for time: {(end_time - start_time) / 100:.6f} seconds")
+    del model

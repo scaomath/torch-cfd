@@ -25,7 +25,7 @@ from data_utils import *
 from solvers import *
 import logging
 
-from sfno.pipeline import DATA_PATH, LOG_PATH
+from fno.pipeline import DATA_PATH, LOG_PATH
 
 
 def main(args):

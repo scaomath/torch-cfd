@@ -23,7 +23,7 @@ from data_gen import *
 from datasets import BochnerDataset
 from losses import SobolevLoss
 import matplotlib.pyplot as plt
-from sfno import SFNO
+from fno.sfno import SFNO
 from torch.utils.data import DataLoader
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
