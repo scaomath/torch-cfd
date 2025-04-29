@@ -38,6 +38,16 @@ Generate the isotropic turbulence in [1] with the inverse cascade frequency sign
 
 ## Training and evaluation scripts
 
+### VSCode workspace for development
+Please add the following setting to your VSCode workspace setting:
+```json
+"settings": {
+		"terminal.integrated.env.osx": {"PYTHONPATH": "${workspaceFolder}"},
+		"terminal.integrated.env.linux": {"PYTHONPATH": "${workspaceFolder}"},
+		"jupyter.notebookFileRoot": "${workspaceFolder}",
+	}
+```
+
 
 ### Testing the arbitrary input and output discretization sizes (including time)
 Run the part below `__name__ == "__main__"` in [`sfno.py`](sfno.py)

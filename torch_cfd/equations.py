@@ -20,6 +20,7 @@ from typing import Callable, Dict, Optional, Tuple, Union
 import torch
 import torch.fft as fft
 import torch.nn as nn
+from einops import repeat
 from tqdm import tqdm
 
 from . import grids
@@ -28,12 +29,23 @@ Array = torch.Tensor
 Grid = grids.Grid
 
 
-def spectral_laplacian_2d(fft_mesh):
+def fft_mesh_2d(n, diam, device=None):
+    kx, ky = [fft.fftfreq(n, d=diam / n) for _ in range(2)]
+    kx, ky = torch.meshgrid([kx, ky], indexing="ij")
+    return kx.to(device), ky.to(device)
+
+
+def fft_expand_dims(fft_mesh, batch_size):
     kx, ky = fft_mesh
-    # (2 * torch.pi * 1j)**2
-    lap = -4 * (torch.pi) ** 2 * (abs(kx) ** 2 + abs(ky) ** 2)
+    kx, ky = [repeat(z, "x y -> b x y 1", b=batch_size) for z in [kx, ky]]
+    return kx, ky
+
+
+def spectral_laplacian_2d(fft_mesh, device=None):
+    kx, ky = fft_mesh
+    lap = -4 * (torch.pi**2) * (abs(kx) ** 2 + abs(ky) ** 2)  # (2 * torch.pi * 1j)**2
     lap[..., 0, 0] = 1
-    return lap
+    return lap.to(device)
 
 
 def spectral_curl_2d(vhat, rfft_mesh):

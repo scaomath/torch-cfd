@@ -13,7 +13,7 @@ from abc import abstractmethod
 from copy import deepcopy
 
 from functools import partial
-from typing import List
+from typing import List, Union, Tuple
 
 import torch
 import torch.fft as fft
@@ -23,6 +23,17 @@ from torch.nn.init import constant_, xavier_uniform_
 
 
 conv_dict = {1: nn.Conv1d, 2: nn.Conv2d, 3: nn.Conv3d}
+
+ACTIVATION_FUNCTIONS = [
+    'CELU', 'ELU', 'GELU', 'GLU', 'Hardtanh', 'Hardshrink', 'Hardsigmoid', 
+    'Hardswish', 'LeakyReLU', 'LogSigmoid', 'MultiheadAttention', 'PReLU', 
+    'ReLU', 'ReLU6', 'RReLU', 'SELU', 'SiLU', 'Sigmoid', 'SoftPlus', 
+    'Softmax', 'Softmax2d', 'Softshrink', 'Softsign', 'Tanh', 'Tanhshrink',
+    'Threshold', 'Mish'
+]
+
+# Type hint for activation functions
+ActivationType = Union[str]
 
 
 class LayerNormnd(nn.GroupNorm):
@@ -50,28 +61,31 @@ class LayerNormnd(nn.GroupNorm):
         return super().forward(v)
 
 
-class MLP(nn.Module):
+class PointwiseFFN(nn.Module):
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        mid_channels,
-        activation: str = "GELU",
+        in_channels: int,
+        out_channels: int,
+        mid_channels: int,
+        activation: ActivationType = "ReLU",
         dim: int = 3,
     ):
-        super(MLP, self).__init__()
+        super().__init__()
+        """
+        Pointwisely-applied 2-layer FFN with a channel expansion
+        """
 
         if dim not in conv_dict:
             raise ValueError(f"Unsupported dimension: {dim}, expected 1, 2, or 3")
 
         Conv = conv_dict[dim]
-        self.mlp1 = Conv(in_channels, mid_channels, 1)
-        self.mlp2 = Conv(mid_channels, out_channels, 1)
+        self.linear1 = Conv(in_channels, mid_channels, 1)
+        self.linear2 = Conv(mid_channels, out_channels, 1)
         self.activation = getattr(nn, activation)()
 
     def forward(self, v: torch.Tensor):
-        for block in [self.mlp1, self.activation, self.mlp2]:
-            v = block(v)
+        for b in [self.linear1, self.activation, self.linear2]:
+            v = b(v)
         return v
 
 
@@ -169,13 +183,13 @@ class SpectralConv(nn.Module):
         return v
 
 
-class FNO(nn.Module):
+class FNOBase(nn.Module):
     def __init__(
         self,
         *,
         num_spectral_layers: int = 4,
         fft_norm="backward",
-        activation: str = "ReLU",
+        activation: ActivationType = "ReLU",
         spatial_padding: int = 0,
         channel_expansion: int = 4,
         spatial_random_feats: bool = False,
@@ -199,7 +213,7 @@ class FNO(nn.Module):
 
         self.spatial_padding = spatial_padding
         self.fft_norm = fft_norm
-        self.activation_name = activation
+        self.activation = activation
         self.spatial_random_feats = spatial_random_feats
         self.lift_activation = lift_activation
         self.channel_expansion = channel_expansion
@@ -228,10 +242,10 @@ class FNO(nn.Module):
         num_layers: int,
         modes: List[int],
         width: int,
-        activation: str,
-        spectral_conv: nn.Module,
-        mlp: nn.Module,
-        linear: nn.Module,
+        activation: ActivationType,
+        spectral_conv: SpectralConv,
+        mlp: PointwiseFFN,
+        linear: Union[nn.Conv1d, nn.Conv2d, nn.Conv3d],
         channel_expansion: int = 4,
     ) -> None:
         """
@@ -283,8 +297,4 @@ class FNO(nn.Module):
         return self
 
     def forward(self, *args, **kwargs):
-        """
-        if out_steps is None, it will try to use self.out_steps
-        if self.out_steps is None, it will use the temporal dimension of the input
-        """
         raise NotImplementedError("Subclasses of FNO must implement the forward method")

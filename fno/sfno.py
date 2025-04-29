@@ -12,8 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from base import *
-from data_gen.solvers import (
+from .base import *
+from torch_cfd.equations import (
     fft_expand_dims,
     fft_mesh_2d,
     spectral_div_2d,
@@ -39,10 +39,10 @@ class SpaceTimePositionalEncoding(nn.Module):
         modes_y: int = 16,
         modes_t: int = 5,
         num_channels: int = 20,
-        input_shape=(64, 64, 10),
-        spatial_random_feats=False,
-        max_time_steps=100,
-        time_exponential_scale=1e-2,
+        input_shape: Union[List, Tuple] = (64, 64, 10),
+        spatial_random_feats: bool = False,
+        max_time_steps: int = 100,
+        time_exponential_scale: float = 1e-2,
         **kwargs,
     ):
         super().__init__()
@@ -113,11 +113,12 @@ class SpaceTimePositionalEncoding(nn.Module):
         return v + self.proj(pe)
 
 
-class Helmholtz(nn.Module):
+class HelmholtzProjection(nn.Module):
     def __init__(
         self,
         n_grid: int = 64,
         diam: float = 2 * torch.pi,
+        dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         """
@@ -144,15 +145,15 @@ class Helmholtz(nn.Module):
         """
         self.n_grid = n_grid
         self.diam = diam
-        self._update_fft_mesh(n_grid, diam)
+        self._update_fft_mesh(n_grid, diam, dtype)
 
-    def _update_fft_mesh(self, n, diam=None):
+    def _update_fft_mesh(self, n, diam=None, dtype=torch.float32):
         diam = diam if diam is not None else self.diam
         kx, ky = fft_mesh_2d(n, diam)
         lap = spectral_laplacian_2d(fft_mesh=(kx, ky))
-        self.register_buffer("lap", lap)
-        self.register_buffer("kx", kx)
-        self.register_buffer("ky", ky)
+        self.register_buffer("lap", lap.to(dtype))
+        self.register_buffer("kx", kx.to(dtype))
+        self.register_buffer("ky", ky.to(dtype))
 
     @staticmethod
     def div(uhat, fft_mesh):
@@ -191,13 +192,13 @@ class Helmholtz(nn.Module):
 class LiftingOperator(nn.Module):
     def __init__(
         self,
-        width,
-        modes_x,
-        modes_y,
-        modes_t,
-        latent_steps=10,
-        norm="backward",
-        activation: str = "GELU",
+        width: int,
+        modes_x: int,
+        modes_y: int,
+        modes_t: int,
+        latent_steps: int = 10,
+        norm: str = "backward",
+        activation: ActivationType = "GELU",
         beta: float = 0.1,
         spatial_random_feats: bool = False,
         channel_expansion: int = 4,
@@ -233,14 +234,21 @@ class LiftingOperator(nn.Module):
             norm=norm,
             bias=False,
         )
+        self.latent_steps = latent_steps
         if nonlinear:
             self.activation = getattr(nn, activation)()
-            self.mlp = MLP(width, width, channel_expansion * width, activation)
+            self.mlp = PointwiseFFN(width, width, channel_expansion * width, activation)
         else:
             self.activation = nn.Identity()
             self.mlp = nn.Conv3d(width, width, kernel_size=1)
 
     def forward(self, v):
+        """
+        input: (b, 1, x, y, t)
+        output: (b, H, x, y, t_latent)
+        the t_latent should be <= the input time steps
+        """
+        assert self.latent_steps <= v.size(-1)
         for b in [self.pe, self.norm, self.proj]:
             v = b(v)
         v = self.activation(v[..., -1:] + self.mlp(self.sconv(v)))
@@ -250,27 +258,28 @@ class LiftingOperator(nn.Module):
 class OutConv(nn.Module):
     def __init__(
         self,
-        modes_x,
-        modes_y,
-        modes_t,
-        delta=0.1,
-        dim_reduction: int = 1,
+        modes_x: int,
+        modes_y: int,
+        modes_t: int,
+        delta: float = 0.1,
+        out_dim: int = 1,
         diam: float = 1,
-        n_grid=64,
-        out_steps=None,
+        n_grid: int = 64,
+        out_steps: int = None,
         spatial_padding: int = 0,
         temporal_padding: bool = True,
-        norm="backward",
+        norm: str = "backward",
         **kwargs,
     ) -> None:
         super().__init__()
         """
         from latent steps to output steps
+        diam and n_grid are only needed for Helmholtz decomposition
         """
-        self.size = [dim_reduction, dim_reduction, modes_x, modes_y, modes_t]
-        if dim_reduction == 2:
-            postprocess = Helmholtz(n_grid=n_grid, diam=diam)
-        elif dim_reduction == 1:
+        self.size = [out_dim, out_dim, modes_x, modes_y, modes_t]
+        if out_dim == 2:
+            postprocess = HelmholtzProjection(n_grid=n_grid, diam=diam)
+        elif out_dim == 1:
             postprocess = nn.Identity()
         self.conv = SpectralConvT(
             *self.size,
@@ -289,20 +298,21 @@ class OutConv(nn.Module):
 
     def forward(self, v, v_res, out_steps: int, **kwargs):
         """
-        input v: (b, c, x, y, t_latent)
+        input v: (b, d, x, y, t_latent)
+        d = out_dim = 1 or 2
         input v_res: (b, x, y, t_in) or (b, 2, x, y, t_in)
         after channel reduction and padding length
         v: (b, x, y, t_latent) or (b, 2, x, y, t_latent)
         v_res input (b, x, y, t_out) if out_steps is None
         """
-        v_res = rearrange(v_res, "b x y t -> b 1 x y t")
-        v = torch.cat([v_res[..., -2:], v], dim=-1)
+        v_res = repeat(v_res, "b x y t -> b d x y t", d=v.size(1))
+        v = torch.cat([v_res[..., -1:], v], dim=-1)
         if self.spatial_padding > 0:
             sp = self.spatial_padding
             padding_kws = {"pad": (0, 0, sp, sp, sp, sp), "mode": "constant"}
             v = F.pad(v, **padding_kws)
 
-        v = self.conv(v, out_steps=out_steps + 2)
+        v = self.conv(v, out_steps=out_steps + 1)
         # if dim reduction is 2, then this v is postprocessed to be divergence free
         # the squeeze(1) would do nothing in the case of velocity
 
@@ -316,13 +326,13 @@ class OutConv(nn.Module):
 class SpectralConvS(SpectralConv):
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        modes_x,
-        modes_y,
-        modes_t,
-        dim=3,
-        bias=False,
+        in_channels: int,
+        out_channels: int,
+        modes_x: int,
+        modes_y: int,
+        modes_t: int,
+        dim: int = 3,
+        bias: bool = False,
         delta: float = 1,
         norm="backward",
     ) -> None:
@@ -386,17 +396,17 @@ class SpectralConvS(SpectralConv):
 class SpectralConvT(SpectralConvS):
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        modes_x,
-        modes_y,
-        modes_t,
-        delta=1e-1,
+        in_channels: int,
+        out_channels: int,
+        modes_x: int,
+        modes_y: int,
+        modes_t: int,
+        delta: float = 1e-1,
         n_grid: int = 64,
         out_steps: int = None,
-        norm="backward",
-        bias=True,
-        temporal_padding=False,
+        norm: str = "backward",
+        bias: bool = True,
+        temporal_padding: bool = False,
         postprocess: nn.Module = nn.Identity(),
     ) -> None:
         super().__init__(
@@ -447,19 +457,19 @@ class SpectralConvT(SpectralConvS):
         return v
 
 
-class SFNO(FNO):
+class SFNO(FNOBase):
     def __init__(
         self,
-        modes_x,
-        modes_y,
-        modes_t,
-        width,
+        modes_x: int,
+        modes_y: int,
+        modes_t: int,
+        width: int,
         out_dim: int = 1,
-        beta=-1e-2,
-        delta=1e-1,
+        beta: float = -1e-2,
+        delta: float = 1e-1,
         num_spectral_layers: int = 4,
-        fft_norm="backward",
-        activation: str = "ReLU",
+        fft_norm: str = "backward",
+        activation: ActivationType = "ReLU",
         spatial_padding: int = 0,
         temporal_padding: bool = True,
         channel_expansion: int = 4,
@@ -539,7 +549,7 @@ class SFNO(FNO):
             [modes_x, modes_y, modes_t],
             width,
             spectral_conv=SpectralConvS,
-            mlp=MLP,
+            mlp=PointwiseFFN,
             linear=nn.Conv3d,
             activation=activation,
             channel_expansion=channel_expansion,
@@ -608,56 +618,3 @@ class SFNO(FNO):
             v, v_res, out_steps=out_steps
         )  # (b,1,x,y,t) -> (b,x,y,t)
         return v
-
-
-if __name__ == "__main__":
-    modes = 8
-    modes_t = 2
-    width = 10
-    bsz = 5
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    sizes = [(n, n, n_t) for (n, n_t) in zip([64, 128, 256], [5, 10, 20])]
-    model = SFNO(modes, modes, modes_t, width).to(device)
-    x = torch.randn(bsz, *sizes[0]).to(device)
-    _ = model(x)
-
-    try:
-        from torchinfo import summary
-
-        """
-        torchinfo has not resolve the complex number problem
-        """
-        summary(model, input_size=(bsz, *sizes[-1]))
-    except:
-        raise ImportError(
-            "torchinfo is not installed, please install it to get the model summary"
-        )
-    del model
-
-    print("\n" * 3)
-    for k, size in enumerate(sizes):
-        torch.cuda.empty_cache()
-        model = SFNO(modes, modes, modes_t, width).to(device)
-        model.add_latent_hook("activations")
-        x = torch.randn(bsz, *size).to(device)
-        pred = model(x)
-        print(f"\n\ninput shape:  {list(x.size())}")
-        print(f"output shape: {list(pred.size())}")
-        for k, v in model.latent_tensors.items():
-            print(k, list(v.shape))
-        del model
-
-    print("\n")
-    # test evaluation speed
-    from time import time
-
-    torch.cuda.empty_cache()
-    model = SFNO(modes, modes, modes_t, width).to(device)
-    model.eval()
-    x = torch.randn(bsz, *sizes[1]).to(device)
-    start_time = time()
-    for _ in range(100):
-        pred = model(x)
-    end_time = time()
-    print(f"Average eval for time: {(end_time - start_time) / 100:.6f} seconds")
-    del model
