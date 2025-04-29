@@ -1,5 +1,7 @@
 # Neural Operator-Assisted Computational Fluid Dynamics in PyTorch
 
+![A decaying turbulence (McWilliams 1984)](examples/McWilliams2d.svg)
+
 ## Summary 
 
 This repository contains mainly two parts:

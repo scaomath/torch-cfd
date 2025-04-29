@@ -20,11 +20,12 @@ import torch.nn.functional as F
 from utils import *
 from pipeline import *
 from data_gen import *
+import matplotlib.pyplot as plt
 from datasets import BochnerDataset
 from losses import SobolevLoss
-import matplotlib.pyplot as plt
-from fno.sfno import SFNO
 from torch.utils.data import DataLoader
+
+from fno.sfno import SFNO
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -44,7 +45,7 @@ DATA_FILES = {
 
 
 def main(args):
-    
+
     current_time = datetime.now().strftime("%d_%b_%Y_%Hh%Mm")
     log_name = "".join(os.path.basename(__file__).split(".")[:-1])
 
@@ -52,9 +53,8 @@ def main(args):
     logger = get_logger(log_filename)
     logger.info(f"Saving log at {log_filename}")
 
-
     all_args = {k: v for k, v in vars(args).items() if not callable(v)}
-    logger.info("Arguments: "+" | ".join(f"{k}={v}" for k, v in all_args.items()))
+    logger.info("Arguments: " + " | ".join(f"{k}={v}" for k, v in all_args.items()))
 
     example = args.example
     Ntrain = args.num_samples
@@ -122,14 +122,20 @@ def main(args):
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
         torch.cuda.empty_cache()
-        model = SFNO(modes, modes, modes_t, width, beta,
-                     num_spectral_layers=num_layers, 
-                     output_steps=out_steps,
-                     spatial_padding=spatial_padding,
-                     activation=activation,
-                     pe_trainable=pe_trainable,
-                     spatial_random_feats=spatial_random_feats,
-                     lift_activation=lift_activation)
+        model = SFNO(
+            modes,
+            modes,
+            modes_t,
+            width,
+            beta=beta,
+            num_spectral_layers=num_layers,
+            output_steps=out_steps,
+            spatial_padding=spatial_padding,
+            activation=activation,
+            pe_trainable=pe_trainable,
+            spatial_random_feats=spatial_random_feats,
+            lift_activation=lift_activation,
+        )
         logger.info(f"Number of parameters: {get_num_params(model)}")
         model.to(device)
 
@@ -155,7 +161,9 @@ def main(args):
             with tqdm(train_loader) as pbar:
                 t_ep = datetime.now().strftime("%d-%b-%Y %H:%M:%S")
                 tr_loss_str = f"current train rel L2: 0.0"
-                pbar.set_description(f"{t_ep} - Epoch [{ep+1:3d}/{epochs}]  {tr_loss_str:>35}")
+                pbar.set_description(
+                    f"{t_ep} - Epoch [{ep+1:3d}/{epochs}]  {tr_loss_str:>35}"
+                )
                 for i, data in enumerate(train_loader):
                     l2 = train_batch_ns(
                         model,
@@ -173,7 +181,9 @@ def main(args):
 
                     if i % 4 == 0:
                         tr_loss_str = f"current train rel L2: {l2.item():.4e}"
-                        pbar.set_description(f"{t_ep} - Epoch [{ep+1:3d}/{epochs}]  {tr_loss_str:>35}")
+                        pbar.set_description(
+                            f"{t_ep} - Epoch [{ep+1:3d}/{epochs}]  {tr_loss_str:>35}"
+                        )
                         pbar.update(4)
             val_l2_min = 1e4
             val_l2 = eval_epoch_ns(
@@ -214,13 +224,19 @@ def main(args):
         )
         test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
         torch.cuda.empty_cache()
-        model = SFNO(modes, modes, modes_t, width, beta,
-                    num_spectral_layers=num_layers, 
-                    spatial_padding=spatial_padding,
-                    activation=activation,
-                    pe_trainable=pe_trainable,
-                    spatial_random_feats=spatial_random_feats,
-                    lift_activation=lift_activation).to(device)
+        model = SFNO(
+            modes,
+            modes,
+            modes_t,
+            width,
+            beta=beta,
+            num_spectral_layers=num_layers,
+            spatial_padding=spatial_padding,
+            activation=activation,
+            pe_trainable=pe_trainable,
+            spatial_random_feats=spatial_random_feats,
+            lift_activation=lift_activation,
+        ).to(device)
         model.load_state_dict(torch.load(path_model))
         logger.info(f"Loaded model from {path_model}")
         eval_metric = SobolevLoss(n_grid=n_test, norm_order=norm_order, relative=True)
@@ -238,20 +254,21 @@ def main(args):
         if args.demo_plots > 0:
             try:
                 from visualizations import plot_contour_trajectory
+
                 idx = np.random.randint(0, args.num_test_samples)
                 im1 = plot_contour_trajectory(
                     preds[idx],
                     num_snapshots=args.demo_plots,
                     T_start=args.time_warmup,
                     dt=args.dt,
-                    title="SFNO predictions"
+                    title="SFNO predictions",
                 )
                 im2 = plot_contour_trajectory(
                     gt_solns[idx],
                     num_snapshots=args.demo_plots,
                     T_start=args.time_warmup,
                     dt=args.dt,
-                    title="Ground truth generated by IMEX"
+                    title="Ground truth generated by IMEX",
                 )
                 plt.show()
             except Exception as e:
