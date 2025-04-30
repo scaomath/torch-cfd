@@ -123,6 +123,7 @@ class HelmholtzProjection(nn.Module):
         super().__init__()
         """
         Perform Helmholtz decomposition in the frequency domain
+        to project any vector field to divergence free
         
         Example usage:
 
@@ -141,7 +142,10 @@ class HelmholtzProjection(nn.Module):
         Now w_hat is divergence free
         >>> div_w_hat = proj.div(w_hat, (kx, ky))
         >>> div_w = fft.irfft2(div_w_hat, s=(n, n), dim=(1,2)).real
-        >>> print(torch.linalg.norm(div_w)) # should be less than machine epsilon
+        >>> print(torch.linalg.norm(div_w)) 
+        The result should be less than batch_size*(interval machine epsilon)
+        interval machine epsilon is approx 
+        1e-6 for float32 and 1e-12 for float64
         """
         self.n_grid = n_grid
         self.diam = diam
@@ -250,8 +254,9 @@ class LiftingOperator(nn.Module):
         """
         assert self.latent_steps <= v.size(-1)
         for b in [self.pe, self.norm, self.proj]:
-            v = b(v)
-        v = self.activation(v[..., -1:] + self.mlp(self.sconv(v)))
+            v = b(v)  # (b, 1, x, y, t_in) -> (b, H, x, y, t_latent)
+        w = self.mlp(self.sconv(v))  # (b, H, x, y, t_latent)
+        v = self.activation(v[..., -1:] + w)
         return v
 
 
@@ -356,11 +361,6 @@ class SpectralConvS(SpectralConv):
         self.modes_t = modes_t
         self.delta = delta
 
-    # @staticmethod
-    # def complex_matmul(x, w):
-    #     # (b, c_i, x, y, t), (c_i, c_o, x, y, t)  -> (b, c_o, x, y, t)
-    #     return torch.einsum("bixyt,ioxyt->boxyt", x, w)
-
     def spectral_conv(self, vh, kx: int, ky: int, kt: int):
         """
         kx, ky, kt: the number of modes in the input
@@ -384,6 +384,7 @@ class SpectralConvS(SpectralConv):
                 out[..., sx, sy, st] = self.complex_matmul(
                     vh[..., sx, sy, st], torch.view_as_complex(self.weight[ix + 2 * iy])
                 )
+                # (b, c_i, x, y, t), (c_i, c_o, x, y, t)  -> (b, c_o, x, y, t)
                 if self.bias:
                     _bias = self.bias[ix + 2 * iy][None, None, ...]
                     out[..., sx, sy, st] += self.delta * torch.view_as_complex(_bias)
@@ -402,12 +403,12 @@ class SpectralConvT(SpectralConvS):
         modes_y: int,
         modes_t: int,
         delta: float = 1e-1,
-        n_grid: int = 64,
         out_steps: int = None,
         norm: str = "backward",
         bias: bool = True,
         temporal_padding: bool = False,
         postprocess: nn.Module = nn.Identity(),
+        **kwargs,
     ) -> None:
         super().__init__(
             in_channels,
@@ -419,7 +420,6 @@ class SpectralConvT(SpectralConvS):
             delta=delta,
             bias=bias,
         )
-        self.n_grid = n_grid
         self.out_steps = out_steps
         self.temporal_padding = temporal_padding
         self.postprocess = postprocess

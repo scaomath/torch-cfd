@@ -13,7 +13,7 @@ from abc import abstractmethod
 from copy import deepcopy
 
 from functools import partial
-from typing import List, Union, Tuple
+from typing import List, Tuple, Union
 
 import torch
 import torch.fft as fft
@@ -25,11 +25,33 @@ from torch.nn.init import constant_, xavier_uniform_
 conv_dict = {1: nn.Conv1d, 2: nn.Conv2d, 3: nn.Conv3d}
 
 ACTIVATION_FUNCTIONS = [
-    'CELU', 'ELU', 'GELU', 'GLU', 'Hardtanh', 'Hardshrink', 'Hardsigmoid', 
-    'Hardswish', 'LeakyReLU', 'LogSigmoid', 'MultiheadAttention', 'PReLU', 
-    'ReLU', 'ReLU6', 'RReLU', 'SELU', 'SiLU', 'Sigmoid', 'SoftPlus', 
-    'Softmax', 'Softmax2d', 'Softshrink', 'Softsign', 'Tanh', 'Tanhshrink',
-    'Threshold', 'Mish'
+    "CELU",
+    "ELU",
+    "GELU",
+    "GLU",
+    "Hardtanh",
+    "Hardshrink",
+    "Hardsigmoid",
+    "Hardswish",
+    "LeakyReLU",
+    "LogSigmoid",
+    "MultiheadAttention",
+    "PReLU",
+    "ReLU",
+    "ReLU6",
+    "RReLU",
+    "SELU",
+    "SiLU",
+    "Sigmoid",
+    "SoftPlus",
+    "Softmax",
+    "Softmax2d",
+    "Softshrink",
+    "Softsign",
+    "Tanh",
+    "Tanhshrink",
+    "Threshold",
+    "Mish",
 ]
 
 # Type hint for activation functions
@@ -157,7 +179,7 @@ class SpectralConv(nn.Module):
         Implement this method in subclass to return complex matmul function
         this is a general implmentation of arbitrary dimension
         (b, c_i, *mesh_dims), (c_i, c_o, *mesh_dims)  -> (b, c_o, *mesh_dims)
-        for pure einsum benchmark, ellipsis version runs about 30% slower, 
+        for pure einsum benchmark, ellipsis version runs about 30% slower,
         however, when being implemented in FNO, the performance difference is negligible
         one can implement a more specific einsum for the dimension
         1D: (b, c_i, x), (c_i, c_o, x)  -> (b, c_o, x)
@@ -165,6 +187,38 @@ class SpectralConv(nn.Module):
         (2+1)D: (b, c_i, x, y, t), (c_i, c_o, x, y, t)  -> (b, c_o, x, y, t)
         """
         return torch.einsum("bi...,io...->bo...", x, w)
+
+    def _set_complex_matmul_nd(self, dim: int = None):
+        """
+        Generate einsum string based on dimension.
+        1D: "bix,iox->box"
+        2D: "bixy,ioxy->boxy"
+        3D: "bixyz,ioxyz->boxyz"
+        4D: "biwxyz, iowxyz->bowxyz"
+
+        Args:
+            dim: The dimension of the data
+
+        Returns:
+            str: The appropriate einsum string
+        """
+        dim = self.dim if dim is None else dim
+        assert dim >= 1
+
+        # Start with the basic components
+        inp = "bi"
+        w = "io"
+        out = "bo"
+
+        # Add dimension-specific characters
+        mesh_dims = "".join([chr(ord("z") + i) for i in range(1 - dim, 1)])
+
+        inp += mesh_dims
+        w += mesh_dims
+        out += mesh_dims
+
+        equation = f"{inp},{w}->{out}"
+        self.complex_matmul = partial(torch.einsum, equation)
 
     @abstractmethod
     def spectral_conv(self, vhat, *fft_mesh_size, **kwargs):

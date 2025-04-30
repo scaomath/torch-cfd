@@ -1,81 +1,37 @@
 import math
+from datetime import datetime
 from functools import partial
 from typing import Callable, Tuple, Union
-from datetime import datetime
 
 import torch
 import torch.fft as fft
-import torch.nn as nn
 import torch.nn.functional as F
-from einops import pack, rearrange, repeat
+from einops import repeat
 from torch.linalg import norm
-
 from torch_cfd.equations import *
+
 TQDM_ITERS = 200
 
+# TODO
+# [x] removes dupes with torch_cfd module
 
-def backdiff(x, order:int=3):
+
+def backdiff(x, order: int = 3):
     """
     bdf scheme for x: (b, *, x, y, t)
     """
-    bdf_weights ={
+    if order > 5:
+        raise NotImplementedError("only bdf order <= 5 is implemented")
+    bdf_weights = {
         1: [1, -1],
-        2: [3/2, -2, 0.5],
-        3: [11/6, -3, 3/2, -1/3],
-        4: [25/12, -4, 3, -4/3, 1/4],
-        5: [137/60, -5, 5, -10/3, 5/4, -1/5]
+        2: [3 / 2, -2, 0.5],
+        3: [11 / 6, -3, 3 / 2, -1 / 3],
+        4: [25 / 12, -4, 3, -4 / 3, 1 / 4],
+        5: [137 / 60, -5, 5, -10 / 3, 5 / 4, -1 / 5],
     }
     weights = torch.as_tensor(bdf_weights[order]).to(x.device)
-    x_t = x[...,-(order+1):].flip(-1)*weights
+    x_t = x[..., -(order + 1) :].flip(-1) * weights
     return x_t.sum(-1)
-    
-def fft_mesh_2d(n, diam, device=None):
-        kx, ky = [fft.fftfreq(n, d=diam/n) for _ in range(2)]
-        kx, ky = torch.meshgrid([kx, ky], indexing="ij")
-        return kx.to(device), ky.to(device)
-
-def fft_expand_dims(fft_mesh, batch_size):
-    kx, ky = fft_mesh
-    kx, ky = [repeat(z, "x y -> b x y 1", b=batch_size) for z in [kx, ky]]
-    return kx, ky
-
-def spectral_div_2d(vhat, fft_mesh):
-    r"""
-    Computes the 2D divergence in the Fourier basis.
-    TODO: this is a dupe function with torch_cfd module
-    needed cleaning up and some refactoring
-    """
-    uhat, vhat = vhat
-    kx, ky = fft_mesh
-    return 2j * torch.pi * (uhat * kx + vhat * ky)
-
-def spectral_grad_2d(vhat, rfft_mesh):
-    kx, ky = rfft_mesh
-    return 2j * torch.pi * kx * vhat, 2j * torch.pi * ky * vhat
-
-def spectral_laplacian_2d(fft_mesh, device=None):
-    """
-    TODO: this is a dupe function with torch_cfd module
-    """
-    kx, ky = fft_mesh
-    lap = -4 * (torch.pi**2) * (abs(kx) ** 2 + abs(ky) ** 2)
-    lap[..., 0, 0] = 1
-    return lap.to(device)
-
-def get_freq_spacetime(n, n_t=None, delta_t=None, device=None):
-    n_t = n if n_t is None else n_t
-    delta_t = 1 / n_t if delta_t is None else delta_t
-    kx = fft.fftfreq(n, d=1 / n)
-    ky = fft.fftfreq(n, d=1 / n)
-    kt = fft.fftfreq(n_t, d=delta_t)
-    kx, ky, kt = torch.meshgrid([kx, ky, kt], indexing="ij")
-    return kx.to(device), ky.to(device), kt.to(device)
-
-def spectral_laplacian_spacetime(n, n_t=None, device=None):
-    kx, ky, _ = get_freq_spacetime(n, n_t)
-    lap = -4 * (torch.pi**2) * (kx**2 + ky**2)
-    lap[0, 0] = 1
-    return lap.to(device)
 
 
 def interp2d(x, **kwargs):
@@ -89,9 +45,17 @@ def interp2d(x, **kwargs):
         x = x.unsqueeze(0)
     return F.interpolate(x, **kwargs).squeeze()
 
+
 def update_residual(
-    w_h, w_h_t, f_h, visc, rfftmesh, laplacian, 
-    dealias_filter=None, dealias=True, **kwargs
+    w_h,
+    w_h_t,
+    f_h,
+    visc,
+    rfftmesh,
+    laplacian,
+    dealias_filter=None,
+    dealias=True,
+    **kwargs,
 ):
     """
     compute the residual of an input w in the frequency domain
@@ -136,7 +100,7 @@ def imex_crank_nicolson_step(
     dealias: bool = False,
     output_rfft: bool = False,
     debug=False,
-    **kwargs
+    **kwargs,
 ):
     """
     inputs:
@@ -160,7 +124,6 @@ def imex_crank_nicolson_step(
     n = size[-2]
     k_max = math.floor(n / 2.0)
 
-
     if rfftmesh is None:
         kx = fft.fftfreq(n, d=diam / n)
         ky = fft.fftfreq(n, d=diam / n)
@@ -179,17 +142,18 @@ def imex_crank_nicolson_step(
         laplacian[..., 0, 0] = 1.0
 
     if dealias_filter is None:
-        dealias_filter = (
-            torch.logical_and(
-                torch.abs(ky) <= (2.0 / 3.0) * k_max,
-                torch.abs(kx) <= (2.0 / 3.0) * k_max,
-            ))
+        dealias_filter = torch.logical_and(
+            torch.abs(ky) <= (2.0 / 3.0) * k_max,
+            torch.abs(kx) <= (2.0 / 3.0) * k_max,
+        )
 
     if f.ndim < w.ndim:
         f = f.unsqueeze(0)
 
     # Stream function in Fourier space: solve Poisson equation
-    psi_h = -w / laplacian # valid for w: (b, *, n, n//2+1, n_t) and lap: (n, n//2+1, n_t)
+    psi_h = (
+        -w / laplacian
+    )  # valid for w: (b, *, n, n//2+1, n_t) and lap: (n, n//2+1, n_t)
 
     # Velocity field in x-direction = psi_y
     u = 2 * math.pi * ky * 1j * psi_h
@@ -222,17 +186,18 @@ def imex_crank_nicolson_step(
         return w_next, dwdt, w, psi_h, res_h, (kx, ky), laplacian, dealias_filter
     else:
         return w_next, dwdt, w, psi_h, res_h
-    
+
+
 def get_trajectory_rk4(
     equation: ImplicitExplicitODE,
     w0: Array,
     dt: float,
     num_steps: int = 1,
     record_every_steps: int = 1,
-    pbar=False,
-    pbar_desc="generating trajectories using RK4",
-    require_grad=False,
-    dtype=torch.complex64,
+    pbar: bool = False,
+    pbar_desc: str = "generating trajectories using RK4",
+    require_grad: bool = False,
+    dtype: torch.dtype = torch.complex64,
 ):
     """
     vorticity stacked in the time dimension
@@ -253,14 +218,14 @@ def get_trajectory_rk4(
     w = w0
     n = w0.size(-1)
     tqdm_iters = num_steps if TQDM_ITERS > num_steps else TQDM_ITERS
-    update_iters = num_steps // tqdm_iters
+    update_every_iters = num_steps // tqdm_iters
     with tqdm(total=num_steps, disable=not pbar) as pb:
         for t_step in range(num_steps):
             w, dwdt = equation.forward(w, dt=dt)
             w.requires_grad_(require_grad)
             dwdt.requires_grad_(require_grad)
 
-            if t_step % update_iters == 0:
+            if t_step % update_every_iters == 0:
                 res = equation.residual(w, dwdt)
                 res_ = fft.irfft2(res).real
                 w_ = fft.irfft2(w).real
@@ -275,7 +240,7 @@ def get_trajectory_rk4(
                     + res_desc
                 )
                 pb.set_description(desc)
-                pb.update(update_iters)
+                pb.update(update_every_iters)
 
             if t_step % record_every_steps == 0:
                 _, psi = vorticity_to_velocity(equation.grid, w)
@@ -303,15 +268,15 @@ def get_trajectory_rk4(
 def get_trajectory_imex_crank_nicolson(
     w0,
     f,
-    visc=1e-3,
-    T=1,
-    delta_t=1e-3,
-    record_steps=1,
-    diam=1,
-    dealias=True,
-    subsample=1,
-    dtype=None,
-    pbar=True,
+    visc: float = 1e-3,
+    T: float = 1,
+    delta_t: float = 1e-3,
+    record_steps: int = 1,
+    diam: float = 1,
+    dealias: bool = True,
+    subsample: int = 1,
+    dtype: torch.dtype = None,
+    pbar: bool = True,
     **kwargs,
 ):
     """
@@ -482,13 +447,13 @@ def get_trajectory_imex_crank_nicolson(
         t_steps=t_steps,
     )
 
+
 if __name__ == "__main__":
     n = 256
     bsz = 4
-    w = torch.randn(bsz, n, n//2+1).to(torch.complex128)
-    f = torch.randn(n, n//2+1).to(torch.complex128)
+    w = torch.randn(bsz, n, n // 2 + 1).to(torch.complex128)
+    f = torch.randn(n, n // 2 + 1).to(torch.complex128)
     result = imex_crank_nicolson_step(w, f, 1e-3, 1e-3)
     for v in result:
         if isinstance(v, torch.Tensor):
             print(v.shape, v.dtype, v.device)
-    

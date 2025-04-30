@@ -1,13 +1,19 @@
 import math
+
 import torch
 import torch.fft as fft
 import torch.nn.functional as F
-import numpy as np
+from einops import rearrange, repeat
 from torch.nn.modules.loss import _WeightedLoss
-from einops import rearrange
+
 
 def central_diff(
-    u, h=None, mode="constant", padding=True, value=None, channel_last=True
+    u: torch.Tensor,
+    h: float = None,
+    mode="constant",
+    padding=True,
+    value=None,
+    channel_last=False,
 ):
     """
     mode: see
@@ -23,9 +29,6 @@ def central_diff(
     bsz, *sizes = u.shape
     n = sizes[1] if channel_last else sizes[-1]
     h = 1 / n if h is None else h
-
-    if isinstance(u, np.ndarray):
-        u = torch.from_numpy(u)
 
     if channel_last:
         u = u.transpose(-1, -3)
@@ -43,6 +46,7 @@ def central_diff(
 
     return gradx / h, grady / h
 
+
 class L2Loss2d(_WeightedLoss):
     def __init__(
         self,
@@ -54,9 +58,10 @@ class L2Loss2d(_WeightedLoss):
         noise=0.0,
         eps=1e-3,
         weighted=False,
+        channel_last=False,
         debug=False,
     ):
-        super(L2Loss2d, self).__init__()
+        super().__init__()
         self.noise = noise
         self.regularizer = regularizer
         self.h = h
@@ -65,10 +70,11 @@ class L2Loss2d(_WeightedLoss):
         self.eps = eps
         self.metric_reduction = metric_reduction
         self.weighted = weighted
+        self.channel_last = channel_last
         self.debug = debug
 
     @staticmethod
-    def _noise(targets: torch.Tensor, n_targets: int, noise=0.0):
+    def _noise(targets: torch.Tensor, noise=0.0):
         assert 0 <= noise <= 0.2
         with torch.no_grad():
             targets = targets * (1.0 + noise * torch.rand_like(targets))
@@ -76,8 +82,8 @@ class L2Loss2d(_WeightedLoss):
 
     def forward(self, preds, targets, targets_grad=None, K=None, weights=None):
         r"""
-        preds: (N, n, n, 1)
-        targets: (N, n, n, 1)
+        preds: (N, *, n, n)
+        targets: (N, *, n, n)
         weights has the same shape with preds on nonuniform mesh
         the norm and the error norm all uses mean instead of sum to cancel out the factor
         """
@@ -87,7 +93,7 @@ class L2Loss2d(_WeightedLoss):
 
         h = self.h if weights is None else weights
         if self.noise > 0:
-            targets = self._noise(targets, targets.size(-1), self.noise)
+            targets = self._noise(targets, self.noise)
 
         target_norm = targets.pow(2).sum(dim=(1, 2, 3)) + self.eps
 
@@ -112,8 +118,8 @@ class L2Loss2d(_WeightedLoss):
             targets_prime_norm = 1
 
         if targets_grad is not None and self.gamma > 0:
-            preds_grad = central_diff(preds)
-            preds_grad = torch.cat(preds_grad, dim=-1)
+            preds_grad = central_diff(preds, channel_last=self.channel_last)
+            preds_grad = torch.cat(preds_grad, dim=1)
 
             grad_diff = (K * (preds_grad - targets_grad)).pow(2)
             loss_prime = self.gamma * grad_diff.mean(dim=(1, 2, 3)) / targets_prime_norm
@@ -193,21 +199,20 @@ class LpLoss(_WeightedLoss):
 class SobolevLoss(_WeightedLoss):
     def __init__(
         self,
-        n_grid=256,
-        time_average=True,  # this is averaging in the Time dimension
-        reduction=True,  # this is averaging in the batch dimension
-        mesh_weighted=True,  # if True, compute L2 otherwise ell2
-        relative=False,
-        inp_time_last=True,
-        freq_cutoff:int=None, # max frequency cutoff
+        n_grid: int = 256,
+        time_average: bool = True,  # this is averaging in the Time dimension
+        reduction: bool = True,  # this is averaging in the batch dimension
+        mesh_weighted: bool = True,  # if True, compute L2 otherwise ell2
+        relative: bool = False,
+        inp_time_last: bool = True,
+        freq_cutoff: int = None,  # max frequency cutoff
         norm_order: float = -1,  # this now can be fractional
-        alpha: float=0.1,
-        fft_norm="backward",
-        diam=1,
-        debug=False,
+        alpha: float = 0.1,
+        fft_norm: str = "backward",
+        diam: float = 1,
+        debug: bool = False,
     ):
         super().__init__()
-        
 
         self.relative = relative
         self.time_average = time_average
@@ -220,14 +225,21 @@ class SobolevLoss(_WeightedLoss):
         self._fftmesh(n_grid, diam, norm_order, freq_cutoff)
 
         self.debug = debug
-    
+
     def __repr__(self):
-        if self.norm_order !=0:
-            rel_str = f"/||({self.alpha:.1f} - \Delta)^({self.norm_order}/2)u||" if self.relative else ""
-            return f"Sobolev loss in Fourier domain: ||({self.alpha:.1f} - \Delta)^({self.norm_order}/2) (u - v) ||"+rel_str
+        if self.norm_order != 0:
+            rel_str = (
+                f"/||({self.alpha:.1f} - \Delta)^({self.norm_order}/2)u||"
+                if self.relative
+                else ""
+            )
+            return (
+                f"Sobolev loss in Fourier domain: ||({self.alpha:.1f} - \Delta)^({self.norm_order}/2) (u - v) ||"
+                + rel_str
+            )
         else:
             rel_str = "/||u||" if self.relative else ""
-            return f"Sobolev loss in Fourier domain: ||u - v||"+rel_str
+            return f"Sobolev loss in Fourier domain: ||u - v||" + rel_str
 
     def _fftmesh(self, n, diam, norm_order, freq_cutoff):
         self.n_grid = n
@@ -235,11 +247,13 @@ class SobolevLoss(_WeightedLoss):
         ky = fft.fftfreq(n, d=diam / n)
         kx, ky = torch.meshgrid([kx, ky], indexing="ij")
         kx, ky = [rearrange(z, "x y -> 1 x y 1") for z in (kx, ky)]
-        if freq_cutoff is None: 
-            freq_cutoff = n//2+1
+        if freq_cutoff is None:
+            freq_cutoff = n // 2 + 1
         freq_cutoff /= diam
         cutoff_val = torch.inf if norm_order < 0 else 0
-        kx, ky = [z.clone().masked_fill(z.abs() > freq_cutoff, cutoff_val) for z in (kx, ky)]
+        kx, ky = [
+            z.clone().masked_fill(z.abs() > freq_cutoff, cutoff_val) for z in (kx, ky)
+        ]
         weight = self.alpha + 4 * (torch.pi) ** 2 * (kx**2 + ky**2)
         # weight[:, 0, 0, :] = 1.0
         self.register_buffer("kx", kx)
@@ -251,8 +265,7 @@ class SobolevLoss(_WeightedLoss):
         x: (bsz, n_grid, n_grid, T)
         y: (bsz, n_grid, n_grid, T)
         """
-        fft_kws = {"dim": (1, 2), 
-                   "norm": self.fft_norm}
+        fft_kws = {"dim": (1, 2), "norm": self.fft_norm}
 
         bsz, *_, nt = x.size()
         n = self.n_grid
@@ -349,3 +362,106 @@ class BochnerNorm(SobolevLoss):
             norm = ((norm_space**2).sum(dim=-1) * self.dt).sqrt()
         norm = norm.mean() if self.reduction else norm.sum()
         return norm
+
+
+class ResidualLoss(_WeightedLoss):
+    def __init__(
+        self,
+        batch_size=1,
+        alpha=1e-1,
+        visc=1e-3,
+        n_grid=64,
+        n_t=40,
+        delta_t=1e-2,
+        norm="ortho",
+    ):
+        super().__init__()
+        self.batch_size = batch_size
+        self.alpha = alpha
+        self.visc = visc
+        self.n_grid = n_grid
+        self.delta_t = delta_t
+        self.n_t = n_t
+        self.norm = norm
+        self._set_spectral_laplacian_spacetime()
+
+    def _set_spectral_laplacian_spacetime(self):
+        """
+        get the frequency in the spatial and temporal domain
+        n: number of grid points in spatial domain
+        n_t: number of time steps
+        delta_t: time step size
+        """
+        n, n_t = self.n_grid, self.n_t
+        delta_t = self.delta_t
+        kx = torch.fft.fftfreq(n, d=1 / n)
+        ky = torch.fft.fftfreq(n, d=1 / n)
+        kt = torch.fft.fftfreq(n_t, d=delta_t)
+        kx, ky, kt = torch.meshgrid([kx, ky, kt], indexing="ij")
+        lap = -4 * (torch.pi**2) * (kx**2 + ky**2)
+        lap[0, 0] = 1
+
+        self.kx, self.ky, self.kt, self.lap = [
+            repeat(z, "x y t -> b x y t", b=self.batch_size) for z in (kx, ky, kt, lap)
+        ]
+
+    def forward(self, w, psi=None, f=None):
+        """
+        inputs are functions defined on spatial grids
+        w: (*, n_grid, n_grid, T)
+        psi: (*, n_grid, n_grid, T)
+        output: same with w
+        """
+
+        batch_size, *size = w.shape
+        n = size[0]
+        n_t = size[-1]
+        assert size[0] == size[1]
+        visc = self.visc
+        kt = self.kt.to(w.device)
+        kx = self.kx.to(w.device)
+        ky = self.ky.to(w.device)
+        lap = self.lap.to(w.device)
+        norm = self.norm
+
+        w_h_t = fft.fftn(w, s=size, norm=norm)  # (B, n, n, n_t)
+        w_h_t = 2 * torch.pi * kt * 1j * w_h_t
+        w_h_t = fft.ifftn(w_h_t, s=size, norm=norm)
+        w_h_t = fft.fftn(w_h_t, s=size, norm=norm)
+
+        w_h = fft.fftn(w, s=size, norm=norm)  # (B, n, n, n_t)
+
+        if psi is not None:
+            psi_h = fft.fftn(psi, s=size, norm=norm)
+        else:
+            psi_h = -w_h / lap
+            psi = fft.ifftn(psi_h, s=size, norm=norm)
+        # Velocity field in x-direction = psi_y
+        q = 2 * torch.pi * ky * 1j * psi_h
+        q = fft.ifftn(q, s=size, norm=norm)
+
+        # Velocity field in y-direction = -psi_x
+        v = -2.0 * torch.pi * kx * 1j * psi_h
+        v = fft.ifftn(v, s=size, norm=norm)
+
+        # Partial x of vorticity
+        w_x = 2.0 * torch.pi * kx * 1j * w_h
+        w_x = fft.ifftn(w_x, s=size, norm=norm)
+
+        # Partial y of vorticity
+        w_y = 2.0 * torch.pi * ky * 1j * w_h
+        w_y = fft.ifftn(w_y, s=size, norm=norm)
+        convection = q * w_x + v * w_y
+        convection = fft.fftn(convection, s=size, norm=norm)
+
+        Lap_w = lap * w_h
+
+        if f is None:
+            f = ff = torch.zeros_like(w_h, device=w.device)
+        else:
+            ff = fft.fftn(f, s=size, norm=norm)
+
+        residual = (w_h_t + convection - visc * Lap_w - ff).real
+        residual = torch.linalg.norm(residual, dim=(-1, -2)).mean() / n
+
+        return residual

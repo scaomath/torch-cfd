@@ -43,7 +43,8 @@ def fft_expand_dims(fft_mesh, batch_size):
 
 def spectral_laplacian_2d(fft_mesh, device=None):
     kx, ky = fft_mesh
-    lap = -4 * (torch.pi**2) * (abs(kx) ** 2 + abs(ky) ** 2)  # (2 * torch.pi * 1j)**2
+    lap = -4 * (torch.pi**2) * (abs(kx) ** 2 + abs(ky) ** 2)  
+    # (2 * torch.pi * 1j)**2
     lap[..., 0, 0] = 1
     return lap.to(device)
 
@@ -150,7 +151,7 @@ def stable_time_step(
 
 
 class ImplicitExplicitODE(nn.Module):
-    """Describes a set of ODEs with implicit & explicit terms.
+    r"""Describes a set of ODEs with implicit & explicit terms.
 
     The equation is given by:
       $\partial u/ \partial t = N(u) + Lu$

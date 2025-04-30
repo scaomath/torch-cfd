@@ -14,7 +14,8 @@ The main changes are documented in the `README.md` under the [`torch_cfd` direct
   - All ops take into consideration the batch dimension of tensors `(b, *, n, m)` regardless of `*` dimension, for example, `(b, T, C, n, n)`, which is similar to PyTorch behavior, not a single trajectory like Google's original Jax-CFD package.
 
 ### Part II: Spectral-Refiner: Neural Operator-Assisted Navier-Stokes Equations simulator.
-  - The **Spatiotemporal Fourier Neural Operator** (SFNO) is a spacetime tensor-to-tensor learner (or trajectory-to-trajectory), available in the [`fno` directory](./fno). Different components of FNO have been re-implemented keeping the conciseness of the original implementation while allowing modern expansions. We draw inspiration from the [3D FNO in Nvidia's Neural Operator repo](https://github.com/neuraloperator/neuraloperator), [Transformers-based neural operators](https://github.com/thuml/Neural-Solver-Library), as well as Temam's book on functional analysis for NSE. Major architectural changes can be found in [the documentation of the `SFNO` class](./fno/sfno.py#L485). 
+  - The **Spatiotemporal Fourier Neural Operator** (SFNO) is a spacetime tensor-to-tensor learner (or trajectory-to-trajectory), available in the [`fno` directory](./fno). Different components of FNO have been re-implemented keeping the conciseness of the original implementation while allowing modern expansions. We draw inspiration from the [3D FNO in Nvidia's Neural Operator repo](https://github.com/neuraloperator/neuraloperator), [Transformers-based neural operators](https://github.com/thuml/Neural-Solver-Library), as well as Temam's book on functional analysis for the NSE. 
+  - Major architectural changes: learnable spatiotemporal positional encodings, layernorm to replace a hard-coded global Gaussian normalizer, and many others. For more details please see [the documentation of the `SFNO` class](./fno/sfno.py#L485). 
   - Data generation for the meta-example of the isotropic turbulence in [McWilliams1984]. After the warmup phase, the energy spectra match the inverse cascade of Kolmogorov flow in a periodic box.
   - Pipelines for the *a posteriori* error estimation to fine-tune the SFNO to reach the scientific computing level of accuracy ($\le 10^{-6}$) in Bochner norm using FLOPs on par with a single evaluation, and only a fraction of FLOPs of a single `.backward()`.
   - [Examples](#examples) can be found below.
@@ -26,7 +27,7 @@ To install `torch-cfd`'s current release, simply do:
 ```bash
 pip install torch-cfd
 ```
-If one wants to play with the neural operator part, it is recommended to clone this repo and play it locally by creating a venv using `requirements.txt`. Note: using PyTorch version >=2.0.0 for the broadcasting semantics.
+If one wants to play with the neural operator part, it is recommended to clone this repo and play it locally by creating a venv using `requirements.txt`. Note: using PyTorch version >=2.0.0 is recommended for the broadcasting semantics.
 ```bash
 python3.11 -m venv venv
 source venv/bin/activate
@@ -50,7 +51,7 @@ Data generation instructions are available in the [SFNO folder](./fno).
   - [Baseline of FNO3d for fixed step size that requires preloading a normalizer](./examples/ex2_FNO3d_train_normalized.ipynb)
 
 ## Licenses
-The Apache 2.0 License in the root folder applies to the `torch-cfd` folder of the repo that is inherited from Google's original license file for `Jax-cfd`. The `sfno` folder has the MIT license inherited from [NVIDIA's Neural Operator repo](https://github.com/neuraloperator/neuraloperator). Note: the license(s) in the subfolder takes precedence.
+The Apache 2.0 License in the root folder applies to the `torch-cfd` folder of the repo that is inherited from Google's original license file for `Jax-cfd`. The `fno` folder has the MIT license inherited from [NVIDIA's Neural Operator repo](https://github.com/neuraloperator/neuraloperator). Note: the license(s) in the subfolder takes precedence.
 
 ## Contributions
 PR welcome. Currently, the port of `torch-cfd` currently includes:
@@ -77,4 +78,4 @@ If you like to use `torch-cfd` please use the following [paper](https://arxiv.or
 I am grateful for the support from [Long Chen (UC Irvine)](https://github.com/lyc102/ifem) and 
 [Ludmil Zikatanov (Penn State)](https://github.com/HAZmathTeam/hazmath) over the years, and their efforts in open-sourcing scientific computing codes. I also appreciate the support from the National Science Foundation (NSF) to junior researchers. I also want to thank the free A6000 credits at the SSE ML cluster from the University of Missouri.
 
-For individual paper's acknowledgement please see [here](./fno/README.md).
+For individual paper's acknowledgment please see [here](./fno/README.md).

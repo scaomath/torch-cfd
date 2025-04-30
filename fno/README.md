@@ -2,7 +2,7 @@
 This is a new concise implementation of the Fourier Neural Operator see [`base.py`](./base.py#L172) for a template class.
 
 ## Learning maps between Bochner spaces
-SFNO now can learn a `trajectory-to-trajectory` map that inputs arbitrary-length trajectory, and outputs arbitrary-lengthed trajectory (if length is not specified, then the output length is the same with the input).
+SFNO now can learn a `trajectory-to-trajectory` map that inputs arbitrary-length trajectory, and outputs arbitrary-lengthed trajectory (if length is not specified, then the output length is the same with the input). The tests on its trajectory-to-trajectory shapes can be found in [`sfno_pytest.py`](sfno_pytest.py) and [`check_SFNO_shapes.py`](../examples/check_SFNO_shapes.py).
 
 ## Data generation
 
