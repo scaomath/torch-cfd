@@ -120,7 +120,7 @@ def main(args):
         drag=0.1,
         smooth=True,
         forcing_fn=forcing_fn,
-        solver=rk4_crank_nicolson,
+        solver=RK4CrankNicholson,
     ).to(device)
 
     num_batches = total_samples // batch_size

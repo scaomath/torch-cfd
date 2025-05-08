@@ -27,6 +27,7 @@ from . import grids
 
 Array = torch.Tensor
 Grid = grids.Grid
+Params = Union[nn.ParameterDict, Dict]
 
 
 def fft_mesh_2d(n, diam, device=None):
@@ -277,15 +278,11 @@ def rk2_crank_nicolson(
     return u
 
 
-def low_storage_runge_kutta_crank_nicolson(
-    u: torch.Tensor,
-    dt: float,
-    params: Dict,
-    equation: ImplicitExplicitODE,
-) -> Array:
+class RK4CrankNicholson(nn.Module):
     """
-    ported from jax functional programming to be tensor2tensor
+    RK4CrankNicholson is ported from jax functional programming to follow the standard tensor2tensor format of nn.Module
     Time stepping via "low-storage" Runge-Kutta and Crank-Nicolson steps.
+    https://github.com/google/jax-cfd/blob/main/jax_cfd/spectral/time_stepping.py#L117
 
     These scheme are second order accurate for the implicit terms, but potentially
     higher order accurate for the explicit terms. This seems to be a favorable
@@ -304,64 +301,69 @@ def low_storage_runge_kutta_crank_nicolson(
       equation.implicit_solve: implicit solver, when evaluates at an input (B, n, n), outputs (B, n, n).
       dt: time step.
 
-    Input: w^{t_i} (B, n, n)
-    Returns: w^{t_{i+1}} (B, n, n)
-
     Reference:
       Canuto, C., Yousuff Hussaini, M., Quarteroni, A. & Zang, T. A.
       Spectral Methods: Evolution to Complex Geometries and Applications to
       Fluid Dynamics. (Springer Berlin Heidelberg, 2007).
       https://doi.org/10.1007/978-3-540-30728-0 (Appendix D.3)
     """
-    dt = dt
-    alphas = params["alphas"]
-    betas = params["betas"]
-    gammas = params["gammas"]
-    F = equation.explicit_terms
-    G = equation.implicit_terms
-    G_inv = equation.implicit_solve
+    def __init__(self,
+                 requires_grad: bool = False,
+                 *args,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self.params = nn.ParameterDict(
+            {'alphas': nn.Parameter(torch.tensor([
+                0,
+                0.1496590219993,
+                0.3704009573644,
+                0.6222557631345,
+                0.9582821306748,
+                1,
+            ])), 
+            'betas': nn.Parameter(torch.tensor([0, -0.4178904745, -1.192151694643, -1.697784692471, -1.514183444257])), 
+            'gammas': nn.Parameter(torch.tensor([
+                0.1496590219993,
+                0.3792103129999,
+                0.8229550293869,
+                0.6994504559488,
+                0.1530572479681,
+            ]))})
+        if not requires_grad:
+            for k, v in self.params.items():
+                v.requires_grad = False
+        
+    def forward(
+        self,
+        u: Array,
+        dt: float,
+        equation: ImplicitExplicitODE, 
+        params: Optional[Params] = None,
+    ) -> Array:
+        """    
+        Input: 
+            - w^{t_i} (B, n, n)
+            - dt: time step
+            - params: RK coefficients optional to override
+        Returns: w^{t_{i+1}} (B, n, n)
+        """
+        params = self.params if params is None else params
+        alphas = params["alphas"]
+        betas = params["betas"]
+        gammas = params["gammas"]
+        F = equation.explicit_terms
+        G = equation.implicit_terms
+        G_inv = equation.implicit_solve
 
-    if len(alphas) - 1 != len(betas) != len(gammas):
-        raise ValueError("number of RK coefficients does not match")
+        if len(alphas) - 1 != len(betas) != len(gammas):
+            raise ValueError("number of RK coefficients does not match")
 
-    h = 0
-    for k in range(len(betas)):
-        h = F(u) + betas[k] * h
-        mu = 0.5 * dt * (alphas[k + 1] - alphas[k])
-        u = G_inv(u + gammas[k] * dt * h + mu * G(u), mu)
-    return u
-
-
-def rk4_crank_nicolson(
-    u: Array,
-    dt: float,
-    equation: ImplicitExplicitODE,
-) -> Array:
-    """Time stepping via Crank-Nicolson and RK4 ("Carpenter-Kennedy")."""
-    params = dict(
-        alphas=[
-            0,
-            0.1496590219993,
-            0.3704009573644,
-            0.6222557631345,
-            0.9582821306748,
-            1,
-        ],
-        betas=[0, -0.4178904745, -1.192151694643, -1.697784692471, -1.514183444257],
-        gammas=[
-            0.1496590219993,
-            0.3792103129999,
-            0.8229550293869,
-            0.6994504559488,
-            0.1530572479681,
-        ],
-    )
-    return low_storage_runge_kutta_crank_nicolson(
-        u,
-        dt=dt,
-        equation=equation,
-        params=params,
-    )
+        h = 0
+        for k in range(len(betas)):
+            h = F(u) + betas[k] * h
+            mu = 0.5 * dt * (alphas[k + 1] - alphas[k])
+            u = G_inv(u + gammas[k] * dt * h + mu * G(u), mu)
+        return u
 
 
 class NavierStokes2DSpectral(ImplicitExplicitODE):
@@ -385,7 +387,9 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         drag: float = 0.0,
         smooth: bool = True,
         forcing_fn: Optional[Callable] = None,
-        solver: Optional[Callable] = rk4_crank_nicolson,
+        solver: Optional[Callable] = RK4CrankNicholson,
+        requires_grad: bool = False,
+        **solver_kwargs,
     ):
         super().__init__()
         self.viscosity = viscosity
@@ -393,7 +397,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         self.drag = drag
         self.smooth = smooth
         self.forcing_fn = forcing_fn
-        self.solver = solver
+        self.solver = solver(requires_grad=requires_grad, **solver_kwargs)
         self._initialize()
 
     def _initialize(self):
@@ -457,7 +461,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
     def forward(self, vort_hat, dt, steps=1):
         """
         vort_hat: (B, kx, ky) or (n_t, kx, ky) or (kx, ky)
-        - if rfft2 is used then the shape is (*, kx, ky//2+1)
+        - if rfft2 is used then the shape is (*, nx, ny//2+1)
         - if (n_t, kx, ky), then the time step marches in the time
         dimension in parallel.
         """
