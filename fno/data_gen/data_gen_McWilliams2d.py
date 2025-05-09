@@ -117,7 +117,7 @@ def main(args):
         drag=0,
         smooth=True,
         forcing_fn=None,
-        solver=RK4CrankNicholson,
+        solver=RK4CrankNicolsonStepper,
     ).to(device)
 
     num_batches = total_samples // batch_size
@@ -145,7 +145,7 @@ def main(args):
                     pbar.set_description(desc)
                     pbar.update(100)
 
-        result = get_trajectory_rk4(
+        result = get_trajectory_imex(
             ns2d,
             vort_hat,
             dt,
@@ -191,5 +191,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = get_args("Meta parameters for generating NSE 2d with McWilliams IV")
+    args = get_args_ns2d("Meta parameters for generating NSE 2d with McWilliams IV")
     main(args)

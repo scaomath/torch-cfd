@@ -1,12 +1,3 @@
-# The MIT License (MIT)
-# Copyright © 2025 Shuhao Cao
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 import argparse
 import math
 import os
@@ -19,9 +10,6 @@ import torch.nn.functional as F
 from grf import GRF2d
 from solvers import *
 from data_utils import *
-from torch_cfd.grids import *
-from torch_cfd.equations import *
-from torch_cfd.forcings import *
 from fno.pipeline import DATA_PATH, LOG_PATH
 
 def main(args):
@@ -29,6 +17,9 @@ def main(args):
     Generate the original FNO data
     the right hand side is a fixed forcing
     0.1*(torch.sin(2*math.pi*(x+y))+torch.cos(2*math.pi*(x+y)))
+    This is modified from the original FNO data generation code.
+    For the new code using torch_cfd, please refer to 
+    fno/data_gen/data_gen_fno.py
 
     It stores data after each batch, and will resume using a fixed formula'd seed
     when starting again.
@@ -37,16 +28,13 @@ def main(args):
     Sample usage:
 
     - Training data for Spectral-Refiner ICLR 2025 paper 'fnodata_extra_64x64_N1280_v1e-3_T50_steps100_alpha2.5_tau7.pt'
-    >>> python data_gen_fno.py --num-samples 1280 --batch-size 256 --grid-size 256 --subsample 4 --extra-vars --time 50 --time-warmup 30 --num-steps 100 --dt 1e-3 --visc 1e-3 --scale 0.1
+    >>> python data_gen_fno.py --num-samples 1280 --batch-size 256 --grid-size 256 --subsample 4 --extra-vars --time 50 --time-warmup 30 --num-steps 100 --dt 1e-3 --visc 1e-3
 
     - Test data
-    >>> python data_gen_fno.py --num-samples 16 --batch-size 8 --grid-size 256 --subsample 1 --double --extra-vars --time 50 --time-warmup 30 --num-steps 100 --dt 1e-3 --scale 0.1 --replicable-init --seed 42
+    >>> python data_gen_fno.py --num-samples 16 --batch-size 8 --grid-size 256 --subsample 1 --double --extra-vars --time 50 --time-warmup 30 --num-steps 100 --dt 1e-3 --replicable-init --seed 42
 
     - Test data fine
-    >>> python data_gen_fno.py --num-samples 2 --batch-size 1 --grid-size 512 --subsample 1 --double --extra-vars --time 50 --time-warmup 30 --num-steps 200 --dt 5e-4 --scale 0.1 --replicable-init --seed 42
-
-    - Testing if the code works
-    >>> python data_gen/data_gen_fno.py --num-samples 4 --batch-size 2 --grid-size 128 --subsample 1 --double --extra-vars --time 2 --time-warmup 1 --num-steps 10 --dt 1e-3 --scale 0.1 --replicable-init --seed 42
+    >>> python data_gen_fno.py --num-samples 2 --batch-size 1 --grid-size 512 --subsample 1 --double --extra-vars --time 50 --time-warmup 30 --num-steps 200 --dt 5e-4 --replicable-init --seed 42
 
     """
 
@@ -58,6 +46,9 @@ def main(args):
     log_filename = os.path.join(logpath, f"{current_time}_{log_name}.log")
     logger = get_logger(log_filename)
 
+    cuda = not args.no_cuda and torch.cuda.is_available()
+    device = torch.device("cuda" if cuda else "cpu")
+    logger.info(f"Using device: {device}")
     logger.info(f"Using the following arguments: ")
     all_args = {k: v for k, v in vars(args).items() if not callable(v)}
     logger.info(" | ".join(f"{k}={v}" for k, v in all_args.items()))
@@ -72,23 +63,15 @@ def main(args):
         raise ValueError(
             f"Grid size {n} is larger than the maximum allowed {n_grid_max}"
         )
-    scale = args.scale
     visc = args.visc if args.Re is None else 1/args.Re # 1e-3
     T = args.time  # 50
     T_warmup = args.time_warmup  # 30
     T_new = T - T_warmup
-    record_steps = args.num_steps
-    dt = args.dt  # 1e-4
-    logger.info(f"Using dt = {dt}")
-
-    warmup_steps = int(T_warmup / dt)
-    total_steps = int(T_new / dt)
-    record_every_iters = int(total_steps / record_steps)
+    delta_t = args.dt  # 1e-4
 
     alpha = args.alpha  # 2.5
     tau = args.tau  # 7
-    peak_wavenumber = args.peak_wavenumber
-    
+    f = args.forcing  # FNO's default sin+cos
     dtype = torch.float64 if args.double else torch.float32
     normalize = args.normalize
     filename = args.filename
@@ -96,12 +79,23 @@ def main(args):
     replicate_init = args.replicable_init
     dealias = not args.no_dealias
     pbar = not args.no_tqdm
+    torch.set_default_dtype(torch.float64)
+    logger.info(f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}")
 
     # Number of solutions to generate
     total_samples = args.num_samples  # 8
 
+    # Number of snapshots from solution
+    record_steps = args.num_steps
+
     # Batch size
     batch_size = args.batch_size  # 8
+
+    solver_kws = dict(visc=visc,
+            delta_t=delta_t,
+            diam=diam,
+            dealias=dealias,
+            dtype=torch.float64)
 
     extra = "_extra" if args.extra_vars else ""
     dtype_str = "_fp64" if args.double else ""
@@ -136,27 +130,9 @@ def main(args):
     else:
         logger.info(f"Generating data and saving in {filename}")
 
-    cuda = not args.no_cuda and torch.cuda.is_available()
-    no_tqdm = args.no_tqdm
-    device = torch.device("cuda:0" if cuda else "cpu")
-
-    torch.set_default_dtype(torch.float64)
-    logger.info(f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}")
     # Set up 2d GRF with covariance parameters
     # Parameters of covariance C = tau^0.5*(2*alpha-2)*(-Laplacian + tau^2 I)^(-alpha)
     # Note that we need alpha > d/2 (here d= 2)
-
-    grid = Grid(shape=(n, n), domain=((0, diam), (0, diam)), device=device)
-    
-    forcing_fn = SinCosForcing(
-        grid=grid,
-        scale=scale,
-        diam=diam,
-        k=peak_wavenumber,
-        vorticity=True,
-    )
-    # Forcing function: 0.1*(sin(2pi(x+y)) + cos(2pi(x+y)))
-    
     grf = GRF2d(
         n=n,
         alpha=alpha,
@@ -166,14 +142,14 @@ def main(args):
         dtype=torch.float64,
     )
 
-    ns2d = NavierStokes2DSpectral(
-        viscosity=visc,
-        grid=grid,
-        smooth=True,
-        forcing_fn=forcing_fn,
-        solver=IMEXStepper,
-        order=2,
-    ).to(device)
+    # Forcing function: 0.1*(sin(2pi(x+y)) + cos(2pi(x+y)))
+    grid = torch.linspace(0, 1, n + 1, device=device)
+    grid = grid[0:-1]
+
+    X, Y = torch.meshgrid(grid, grid, indexing="ij")
+    # FNO's original implementation
+    # fh = 0.1 * (torch.sin(2 * math.pi * (X + Y)) + torch.cos(2 * math.pi * (X + Y)))
+    fh = f(X, Y)
 
     if os.path.exists(data_filepath) and not force_rerun:
         logger.info(f"Data already exists at {data_filepath}")
@@ -192,48 +168,46 @@ def main(args):
         # Sample random fields
         seeds = [args.seed + idx + k for k in range(batch_size)]
         n0 = n_grid_max if replicate_init else n
-        vort_init = [grf.sample(1, n0, random_state=s) for _, s in zip(range(batch_size), seeds)]
-        vort_init = torch.stack(vort_init)
+        w0 = [grf.sample(1, n0, random_state=s) for _, s in zip(range(batch_size), seeds)]
+        w0 = torch.stack(w0)
         if n != n0:
-            vort_init = F.interpolate(vort_init, size=(n, n), mode="nearest")
-        vort_init = vort_init.squeeze(1)
-        vort_hat = fft.rfft2(vort_init).to(device)
-
-        logger.info(f"initial condition {vort_init.shape}")
+            w0 = F.interpolate(w0, size=(n, n), mode="nearest")
+        w0 = w0.squeeze(1)
+        
+        logger.info(f"initial condition {w0.shape}")
 
         if T_warmup > 0:
-            with tqdm(total=warmup_steps, disable=no_tqdm) as pbar:
-                for j in range(warmup_steps):
-                    vort_hat, _ = ns2d.step(vort_hat, dt)
-                    if j % 100 == 0:
-                        vort_norm = torch.linalg.norm(fft.irfft2(vort_hat)).item() / n
-                        desc = (
-                            datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-                            + f" - Warmup | vort_hat ell2 norm {vort_norm:.4e}"
-                        )
-                        pbar.set_description(desc)
-                        pbar.update(100)
+            logger.info(f"warm up till {T_warmup}")
+            tmp = get_trajectory_imex_crank_nicolson(
+                w0,
+                fh,
+                T=T_warmup,
+                record_steps=record_steps,
+                subsample=1,
+                pbar=pbar,
+                **solver_kws,
+            )
+            w0 = tmp["vorticity"][:, -1].to(device)
+            del tmp
+            logger.info(f"warmup initial condition {w0.shape}")
 
         logger.info(f"generate data from {T_warmup} to {T}")
-        result = get_trajectory_imex(
-            ns2d,
-            vort_hat,
-            dt,
-            num_steps=total_steps,
-            record_every_steps=record_every_iters,
-            pbar=not no_tqdm,
+        result = get_trajectory_imex_crank_nicolson(
+            w0,
+            fh,
+            T=T_new,
+            record_steps=record_steps,
+            subsample=subsample,
+            pbar=pbar,
+            **solver_kws,
         )
 
         for field, value in result.items():
-            value = fft.irfft2(value).real.cpu().to(dtype)
-            logger.info(
-                f"variable: {field} | shape: {value.shape} | dtype: {value.dtype}"
-            )
-            if subsample > 1:
-                assert value.ndim == 4, f"Subsampling only works for (b, c, h, w) tensors, current shape: {value.shape}"
+            if subsample > 1 and value.ndim == 4:
                 value = F.interpolate(value, size=(ns, ns), mode="bilinear")
-            result[field] = value
+            result[field] = value.cpu().to(dtype)
             logger.info(f"{field:<15} | {value.shape} | {value.dtype}")
+            
 
         if not extra:
             for key in ["vort_t", "stream", "residual"]:

@@ -47,7 +47,7 @@ def get_logger(filename, tqdm=True):
     return logging.getLogger()
 
 
-def get_args(desc="Data generation in 2D"):
+def get_args_ns2d(desc="Data generation in 2D"):
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument(
         "--example",
@@ -86,6 +86,7 @@ def get_args(desc="Data generation in 2D"):
     parser.add_argument(
         "--scale",
         default=1,
+        type=float,
         metavar="scale",
         help="spatial scaling of the domain (default: 1.0)",
     )

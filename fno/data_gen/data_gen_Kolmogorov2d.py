@@ -51,6 +51,10 @@ def main(args):
     log_filename = os.path.join(LOG_PATH, f"{current_time}_{log_name}.log")
     logger = get_logger(log_filename)
 
+    logger.info(f"Using the following arguments: ")
+    all_args = {k: v for k, v in vars(args).items() if not callable(v)}
+    logger.info(" | ".join(f"{k}={v}" for k, v in all_args.items()))
+
     total_samples = args.num_samples
     batch_size = args.batch_size  # 128
     n = args.grid_size  # 256
@@ -58,15 +62,14 @@ def main(args):
     viscosity = args.visc
     dt = args.dt  # 1e-3
     T = args.time  # 10
-    subsample = args.subsample  # 4
-    ns = n // subsample
     T_warmup = args.time_warmup  # 4.5
     num_snapshots = args.num_steps  # 100
+    subsample = args.subsample  # 4
+    ns = n // subsample
     random_state = args.seed
     peak_wavenumber = args.peak_wavenumber  # 4
-    diam = (
-        eval(args.diam) if isinstance(args.diam, str) else args.diam
-    )  # "2 * torch.pi"
+    diam = args.diam  # "2 * torch.pi" default
+    diam = eval(diam) if isinstance(diam, str) else diam  # 
     force_rerun = args.force_rerun
 
     logger = logging.getLogger()
@@ -89,21 +92,29 @@ def main(args):
         )
         args.filename = filename
     data_filepath = os.path.join(DATA_PATH, filename)
-    if os.path.exists(data_filepath) and not force_rerun:
-        logger.info(f"Data already exists at {data_filepath}")
-        return
-    elif os.path.exists(data_filepath) and force_rerun:
-        logger.info(f"Force rerun and save data to {data_filepath}")
-        os.remove(data_filepath)
+    data_exist = os.path.exists(data_filepath)
+    if data_exist and not force_rerun:
+        logger.info(f"File {filename} exists with current data as follows:")
+        data = torch.load(data_filepath)
+        
+        for key, v in data.items():
+            if isinstance(v, torch.Tensor):
+                logger.info(f"{key:<12} | {v.shape} | {v.dtype}")
+            else:
+                logger.info(f"{key:<12} | {v.dtype}")
+        if len(data[key]) == total_samples:
+            return
+        elif len(data[key]) < total_samples:
+            total_samples -= len(data[key])
     else:
-        logger.info(f"Save data to {data_filepath}")
+        logger.info(f"Generating data and saving in {filename}")
 
     cuda = not args.no_cuda and torch.cuda.is_available()
     no_tqdm = args.no_tqdm
     device = torch.device("cuda:0" if cuda else "cpu")
 
-    torch.set_default_dtype(dtype)
-    logger.info(f"Using device: {device} | dtype: {dtype}")
+    torch.set_default_dtype(torch.float64)
+    logger.info(f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}")
 
     grid = Grid(shape=(n, n), domain=((0, diam), (0, diam)), device=device)
 
@@ -120,7 +131,7 @@ def main(args):
         drag=0.1,
         smooth=True,
         forcing_fn=forcing_fn,
-        solver=RK4CrankNicholson,
+        solver=RK4CrankNicolsonStepper,
     ).to(device)
 
     num_batches = total_samples // batch_size
@@ -156,8 +167,8 @@ def main(args):
                     )
                     pbar.set_description(desc)
                     pbar.update(100)
-
-        result = get_trajectory_rk4(
+        logger.info(f"generate data from {T_warmup} to {T}")
+        result = get_trajectory_imex(
             ns2d,
             vort_hat,
             dt,
@@ -172,9 +183,9 @@ def main(args):
                 f"variable: {field} | shape: {value.shape} | dtype: {value.dtype}"
             )
             if subsample > 1:
-                result[field] = F.interpolate(value, size=(ns, ns), mode="bilinear")
-            else:
-                result[field] = value
+                assert value.ndim == 4, f"Subsampling only works for (b, c, h, w) tensors, current shape: {value.shape}"
+                value = F.interpolate(value, size=(ns, ns), mode="bilinear")
+            result[field] = value
 
         result["random_states"] = torch.tensor(
             [random_state + idx + k for k in range(batch_size)], dtype=torch.int32
@@ -198,5 +209,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = get_args("Params Kolmogorov 2d flow data generation")
+    args = get_args_ns2d("Params Kolmogorov 2d flow data generation")
     main(args)

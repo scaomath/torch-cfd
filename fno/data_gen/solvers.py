@@ -188,7 +188,7 @@ def imex_crank_nicolson_step(
         return w_next, dwdt, w, psi_h, res_h
 
 
-def get_trajectory_rk4(
+def get_trajectory_imex(
     equation: ImplicitExplicitODE,
     w0: Array,
     dt: float,

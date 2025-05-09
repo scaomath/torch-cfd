@@ -194,95 +194,152 @@ class ImplicitExplicitODE(nn.Module):
         raise NotImplementedError
 
 
-def backward_forward_euler(
-    u: torch.Tensor,
-    dt: float,
-    equation: ImplicitExplicitODE,
-) -> Array:
-    """Time stepping via forward and backward Euler methods.
-
-    This method is first order accurate.
-
-    Args:
-        equation: equation to solve.
-        time_step: time step.
-
-    Returns:
-        Function that performs a time step.
+class IMEXStepper(nn.Module):
     """
-    F = equation.explicit_terms
-    G_inv = equation.implicit_solve
-
-    g = u + dt * F(u)
-    u = G_inv(g, dt)
-
-    return u
-
-
-def imex_crank_nicolson(
-    u: torch.Tensor,
-    dt: float,
-    equation: ImplicitExplicitODE,
-) -> Array:
-    """Time stepping via forward and backward Euler methods.
-
-    This method is first order accurate.
-
+    Implicit-Explicit (IMEX) time stepping with configurable order.
+    
+    Supports:
+    - order=1: Forward-Backward Euler, implicit for the diffusion (first-order accuracy)
+    - order=1.5: Standard IMEX Crank-Nicolson, CR for the diffusion.
+    - order=2: RK2 Crank-Nicolson (second-order accuracy)
+        - With alpha=0.5: Heun's method (midpoint rule)
+        - With alpha=2/3: Ralston's method (minimizes truncation error)
+    
     Args:
-        equation: equation to solve.
-        time_step: time step.
-
-    Returns:
-        Function that performs a time step.
-    """
-    F = equation.explicit_terms
-    G = equation.implicit_terms
-    G_inv = equation.implicit_solve
-
-    g = u + dt * F(u) + 0.5 * dt * G(u)
-    u = G_inv(g, 0.5 * dt)
-
-    return u
-
-
-def rk2_crank_nicolson(
-    u: torch.Tensor,
-    dt: float,
-    equation: ImplicitExplicitODE,
-) -> Array:
-    """Time stepping via Crank-Nicolson and 2nd order Runge-Kutta (Heun).
-
-    This method is second order accurate.
-
-    Args:
-      equation: equation to solve.
-      time_step: time step.
-
-    Returns:
-      Function that performs a time step.
-
-    Reference:
-      Chandler, G. J. & Kerswell, R. R. Invariant recurrent solutions embedded in
+      order: Order of accuracy (1, 1.5, or 2)
+      alpha: RK weight parameter (default: 0.5 for Heun's method)
+      beta: Weight for implicit step (default: 0.5 for standard CN, 1.0 for order=1)
+      requires_grad: Whether parameters should be trainable
+    
+    References:
+      - (RK) Chandler, G. J. & Kerswell, R. R. Invariant recurrent solutions embedded in
       a turbulent two-dimensional Kolmogorov flow. J. Fluid Mech. 722, 554-595
       (2013). https://doi.org/10.1017/jfm.2013.122 (Section 3)
+      - https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods
     """
-    F = equation.explicit_terms
-    G = equation.implicit_terms
-    G_inv = equation.implicit_solve
+    def __init__(
+        self,
+        order: float = 2,
+        alpha: float = 0.5,
+        beta: Optional[float] = 0.5,
+        requires_grad: bool = False,
+        *args,
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.order = order
+        
+        # Set default beta based on order
+        params = {
+            'alpha': torch.tensor(alpha),
+            'beta': torch.tensor(beta),
+        }   
+        if order == 1 or order == 1.5:
+            # Order 1: Forward-Backward Euler (no parameters needed)
+            # alpha = 1.0
+            # Order 1.5: Standard IMEX Crank-Nicolson
+            # alpha = 0.5
+            self.stepper = self._imex      
+        elif order == 2:
+            # Order 2: RK2 Crank-Nicolson
+            self.stepper = self._rk2_crank_nicolson
+        
+        self._set_params(params, requires_grad=requires_grad)
+    
+    def _set_params(self, params: Params, requires_grad: bool = False):
+        """Set the RK coefficients."""
+        for k, v in params.items():
+            if not isinstance(v, nn.Parameter):
+                v = nn.Parameter(v)
+        self.params = nn.ParameterDict(params)
+        if not requires_grad:
+            for k, v in self.params.items():
+                v.requires_grad = False
+        self.requires_grad = requires_grad
 
-    g = u + 0.5 * dt * G(u)
-    h = F(u)
-    u = G_inv(g + dt * h, 0.5 * dt)
-    h = 0.5 * (F(u) + h)
-    u = G_inv(g + dt * h, 0.5 * dt)
-    return u
+    def _imex(
+        self,
+        u: Array,
+        dt: float,
+        equation: ImplicitExplicitODE,
+        params: Optional[Params] = None
+    ) -> Array:
+        """Standard first order IMEX with Crank-Nicolson or Forward-Backward Euler."""
+        params = self.params if params is None else params
+        alpha = params['alpha']
+        
+        F = equation.explicit_terms
+        G = equation.implicit_terms
+        G_inv = equation.implicit_solve
+
+        g = u + dt * F(u) + (1 - alpha) * dt * G(u)
+        u = G_inv(g, alpha * dt)
+        return u
+    
+    def _rk2_crank_nicolson(
+        self,
+        u: Array,
+        dt: float,
+        equation: ImplicitExplicitODE,
+        params: Optional[Params] = None
+    ) -> Array:
+        """Time stepping via Crank-Nicolson and 2nd order Runge-Kutta (Heun).
+
+        Args:
+        equation: equation to solve.
+        time_step: time step.
+
+        Returns:
+        Function that performs a time step.
+
+        Reference:
+        Chandler, G. J. & Kerswell, R. R. Invariant recurrent solutions embedded in
+        a turbulent two-dimensional Kolmogorov flow. J. Fluid Mech. 722, 554-595
+        (2013). https://doi.org/10.1017/jfm.2013.122 (Section 3)
+        """
+        params = self.params if params is None else params
+        alpha = params['alpha']
+        beta = params['beta']
+        
+        F = equation.explicit_terms
+        G = equation.implicit_terms
+        G_inv = equation.implicit_solve
+
+        g = u + beta * dt * G(u)
+        h = F(u)
+        u = G_inv(g + dt * h, beta * dt)
+        
+        h = alpha * F(u) + (1 - alpha) * h
+        u = G_inv(g + dt * h, beta * dt)
+        return u
+    
+    def forward(
+        self,
+        u: Array,
+        dt: float,
+        equation: ImplicitExplicitODE,
+        params: Optional[Params] = None,
+    ) -> Array:
+        """
+        Perform a time step using the configured IMEX scheme.
+        
+        Input:
+            u^{t_i}: (B, *, n, n)
+            
+        Returns:
+            u^{t_{i+1}} (B, *, n, n)
+        """
+        return self.stepper(u, dt, equation, params)
 
 
-class RK4CrankNicholson(nn.Module):
+class RK4CrankNicolsonStepper(IMEXStepper):
     """
-    RK4CrankNicholson is ported from jax functional programming to follow the standard tensor2tensor format of nn.Module
-    Time stepping via "low-storage" Runge-Kutta and Crank-Nicolson steps.
+    RK4CrankNicholsonStepper is ported from jax functional programming to follow 
+    the standard tensor2tensor format of nn.Module
+    Time stepping via 
+    - either "low-storage" Runge-Kutta and Crank-Nicolson steps.
     https://github.com/google/jax-cfd/blob/main/jax_cfd/spectral/time_stepping.py#L117
+    - or standard RK4 coefficients (classic 4-stage RK4)
 
     These scheme are second order accurate for the implicit terms, but potentially
     higher order accurate for the explicit terms. This seems to be a favorable
@@ -308,36 +365,50 @@ class RK4CrankNicholson(nn.Module):
       https://doi.org/10.1007/978-3-540-30728-0 (Appendix D.3)
     """
     def __init__(self,
+                 order: float = 4,
                  requires_grad: bool = False,
+                 weights: Optional[Params] = None,
+                 low_storage: bool = True,
                  *args,
                  **kwargs):
-        super().__init__(*args, **kwargs)
-        self.params = nn.ParameterDict(
-            {'alphas': nn.Parameter(torch.tensor([
-                0,
-                0.1496590219993,
-                0.3704009573644,
-                0.6222557631345,
-                0.9582821306748,
-                1,
-            ])), 
-            'betas': nn.Parameter(torch.tensor([0, -0.4178904745, -1.192151694643, -1.697784692471, -1.514183444257])), 
-            'gammas': nn.Parameter(torch.tensor([
-                0.1496590219993,
-                0.3792103129999,
-                0.8229550293869,
-                0.6994504559488,
-                0.1530572479681,
-            ]))})
-        if not requires_grad:
-            for k, v in self.params.items():
-                v.requires_grad = False
+        super().__init__(order, *args, **kwargs)
+        if low_storage:
+            # Carpenter-Kennedy coefficients
+            weights = {
+                'alphas': [
+                    0,
+                    0.1496590219993,
+                    0.3704009573644,
+                    0.6222557631345,
+                    0.9582821306748,
+                    1,
+                ],
+                'betas': [
+                    0, -0.4178904745, -1.192151694643, -1.697784692471, -1.514183444257
+                ],
+                'gammas': [
+                    0.1496590219993,
+                    0.3792103129999,
+                    0.8229550293869,
+                    0.6994504559488,
+                    0.1530572479681,
+                ]
+            }
+        else:
+            # Standard RK4 coefficients (classic 4-stage RK4)
+            weights = {
+                'alphas': [0, 0.5, 0.5, 1.0, 1.0],
+                'betas': [0, 0, 0, 0],
+                'gammas': [1/6, 1/3, 1/3, 1/6],
+            }
+        params = {k: torch.tensor(v) for k, v in weights.items()}
+        self._set_params(params, requires_grad=requires_grad)
         
     def forward(
         self,
         u: Array,
         dt: float,
-        equation: ImplicitExplicitODE, 
+        equation: ImplicitExplicitODE,
         params: Optional[Params] = None,
     ) -> Array:
         """    
@@ -387,7 +458,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         drag: float = 0.0,
         smooth: bool = True,
         forcing_fn: Optional[Callable] = None,
-        solver: Optional[Callable] = RK4CrankNicholson,
+        solver: Optional[Callable] = RK4CrankNicolsonStepper,
         requires_grad: bool = False,
         **solver_kwargs,
     ):
@@ -397,7 +468,8 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         self.drag = drag
         self.smooth = smooth
         self.forcing_fn = forcing_fn
-        self.solver = solver(requires_grad=requires_grad, **solver_kwargs)
+        self.solver = solver(requires_grad=requires_grad, 
+                             **solver_kwargs)
         self._initialize()
 
     def _initialize(self):
