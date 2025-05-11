@@ -44,7 +44,7 @@ class UnitGaussianNormalizer(nn.Module):
             setattr(self, k, v)
         return self
 
-    def _fit_transform(self, x:torch.Tensor):
+    def _fit_transform(self, x: torch.Tensor):
         mean = torch.as_tensor(x.mean(0), dtype=torch.float32)
         std = torch.as_tensor(x.std(0), dtype=torch.float32)
         x_transformed = (x - mean) / (std + self.eps)
@@ -55,7 +55,7 @@ class UnitGaussianNormalizer(nn.Module):
     def fit_transform(self, *args, **kwargs):
         return self._fit_transform(*args, **kwargs)
 
-    def _transform(self, x:torch.Tensor, align_shapes=False, **kwargs):
+    def _transform(self, x: torch.Tensor, align_shapes=False, **kwargs):
         if hasattr(self, "mean"):
             mean, std = self.mean, self.std
             if align_shapes:
@@ -68,7 +68,9 @@ class UnitGaussianNormalizer(nn.Module):
     def transform(self, *args, **kwargs):
         return self._transform(*args, **kwargs)
 
-    def inverse_transform(self, x:torch.Tensor, sample_idx=None, align_shapes=True, **kwargs):
+    def inverse_transform(
+        self, x: torch.Tensor, sample_idx=None, align_shapes=True, **kwargs
+    ):
         std = (self.std + self.eps).to(x.device)
         mean = self.mean.to(x.device)
         if align_shapes:
@@ -88,7 +90,7 @@ class UnitGaussianNormalizer(nn.Module):
         return self.inverse_transform(*args, **kwargs)
 
     @staticmethod
-    def _align_shapes(x:torch.Tensor, mean:torch.Tensor, std:torch.Tensor, **kwargs):
+    def _align_shapes(x: torch.Tensor, mean: torch.Tensor, std: torch.Tensor, **kwargs):
         """
         x: (bsz, m, m, C) or (bsz, m, m) or (bsz, C, m, m)
         mean: (n, n, C) or (n, n) or (C, n, n)
@@ -111,7 +113,7 @@ class SpatialGaussianNormalizer(UnitGaussianNormalizer):
         """
         self.device = None
 
-    def _fit_transform(self, x:torch.Tensor):
+    def _fit_transform(self, x: torch.Tensor):
         mean = x.mean((0, -1)).unsqueeze(-1)
         std = x.std((0, -1)).unsqueeze(-1)
         self.register_buffer("mean", mean)

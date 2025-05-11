@@ -24,6 +24,7 @@ from torch_cfd.equations import *
 from torch_cfd.forcings import *
 from fno.pipeline import DATA_PATH, LOG_PATH
 
+
 def main(args):
     """
     Generate the original FNO data
@@ -73,7 +74,7 @@ def main(args):
             f"Grid size {n} is larger than the maximum allowed {n_grid_max}"
         )
     scale = args.scale
-    visc = args.visc if args.Re is None else 1/args.Re # 1e-3
+    visc = args.visc if args.Re is None else 1 / args.Re  # 1e-3
     T = args.time  # 50
     T_warmup = args.time_warmup  # 30
     T_new = T - T_warmup
@@ -88,7 +89,7 @@ def main(args):
     alpha = args.alpha  # 2.5
     tau = args.tau  # 7
     peak_wavenumber = args.peak_wavenumber
-    
+
     dtype = torch.float64 if args.double else torch.float32
     normalize = args.normalize
     filename = args.filename
@@ -107,11 +108,11 @@ def main(args):
     dtype_str = "_fp64" if args.double else ""
     if filename is None:
         filename = (
-            f"fnodata{extra}{dtype_str}_{ns}x{ns}_N{total_samples}" 
+            f"fnodata{extra}{dtype_str}_{ns}x{ns}_N{total_samples}"
             + f"_v{visc:.0e}_T{int(T)}_steps{record_steps}_alpha{alpha:.1f}_tau{tau:.0f}.pt"
         ).replace("e-0", "e-")
         args.filename = filename
-    
+
     filepath = args.filepath if args.filepath is not None else DATA_PATH
     for p in [filepath]:
         if not os.path.exists(p):
@@ -123,7 +124,7 @@ def main(args):
     if data_exist and not force_rerun:
         logger.info(f"File {filename} exists with current data as follows:")
         data = torch.load(data_filepath)
-        
+
         for key, v in data.items():
             if isinstance(v, torch.Tensor):
                 logger.info(f"{key:<12} | {v.shape} | {v.dtype}")
@@ -141,13 +142,15 @@ def main(args):
     device = torch.device("cuda:0" if cuda else "cpu")
 
     torch.set_default_dtype(torch.float64)
-    logger.info(f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}")
+    logger.info(
+        f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}"
+    )
     # Set up 2d GRF with covariance parameters
     # Parameters of covariance C = tau^0.5*(2*alpha-2)*(-Laplacian + tau^2 I)^(-alpha)
     # Note that we need alpha > d/2 (here d= 2)
 
     grid = Grid(shape=(n, n), domain=((0, diam), (0, diam)), device=device)
-    
+
     forcing_fn = SinCosForcing(
         grid=grid,
         scale=scale,
@@ -156,7 +159,7 @@ def main(args):
         vorticity=True,
     )
     # Forcing function: 0.1*(sin(2pi(x+y)) + cos(2pi(x+y)))
-    
+
     grf = GRF2d(
         n=n,
         alpha=alpha,
@@ -187,12 +190,16 @@ def main(args):
     num_batches = total_samples // batch_size
     for i, idx in enumerate(range(0, total_samples, batch_size)):
         logger.info(f"Generate trajectory for batch [{i+1}/{num_batches}]")
-        logger.info(f"random states: {args.seed + idx} to {args.seed + idx + batch_size-1}")
+        logger.info(
+            f"random states: {args.seed + idx} to {args.seed + idx + batch_size-1}"
+        )
 
         # Sample random fields
         seeds = [args.seed + idx + k for k in range(batch_size)]
         n0 = n_grid_max if replicate_init else n
-        vort_init = [grf.sample(1, n0, random_state=s) for _, s in zip(range(batch_size), seeds)]
+        vort_init = [
+            grf.sample(1, n0, random_state=s) for _, s in zip(range(batch_size), seeds)
+        ]
         vort_init = torch.stack(vort_init)
         if n != n0:
             vort_init = F.interpolate(vort_init, size=(n, n), mode="nearest")
@@ -230,7 +237,9 @@ def main(args):
                 f"variable: {field} | shape: {value.shape} | dtype: {value.dtype}"
             )
             if subsample > 1:
-                assert value.ndim == 4, f"Subsampling only works for (b, c, h, w) tensors, current shape: {value.shape}"
+                assert (
+                    value.ndim == 4
+                ), f"Subsampling only works for (b, c, h, w) tensors, current shape: {value.shape}"
                 value = F.interpolate(value, size=(ns, ns), mode="bilinear")
             result[field] = value
             logger.info(f"{field:<15} | {value.shape} | {value.dtype}")
@@ -250,7 +259,7 @@ def main(args):
         try:
             verify_trajectories(
                 data_filepath,
-                dt=T_new/record_steps,
+                dt=T_new / record_steps,
                 T_warmup=T_warmup,
                 n_samples=1,
             )
