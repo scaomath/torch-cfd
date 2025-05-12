@@ -35,7 +35,7 @@ BoundaryConditions = grids.BoundaryConditions
 def _rhs_transform(
     u: GridArray,
     bc: BoundaryConditions,
-) -> Array:
+) -> torch.Tensor:
     """Transform the RHS of pressure projection equation for stability.
 
     In case of poisson equation, the kernel is subtracted from RHS for stability.

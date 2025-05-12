@@ -24,7 +24,6 @@ import torch.fft as fft
 
 from . import grids, pressure
 
-Array = torch.Tensor
 GridArray = grids.GridArray
 GridArrayVector = grids.GridArrayVector
 GridVariable = grids.GridVariable
@@ -33,7 +32,7 @@ BoundaryConditions = grids.BoundaryConditions
 
 
 def wrap_velocities(
-    v: Sequence[Array],
+    v: Sequence[torch.Tensor],
     grid: grids.Grid,
     bcs: Sequence[BoundaryConditions],
     device: Optional[torch.device] = None,
@@ -47,7 +46,7 @@ def wrap_velocities(
 
 
 def wrap_vorticity(
-    w: Array,
+    w: torch.Tensor,
     grid: grids.Grid,
     bc: BoundaryConditions,
     device: Optional[torch.device] = None,
@@ -80,7 +79,7 @@ def McWilliams_density(k, mode: float, tau: float = 1.0):
     return (k * (tau**2 + (k / mode) ** 4)) ** (-1)
 
 
-def _angular_frequency_magnitude(grid: grids.Grid) -> Array:
+def _angular_frequency_magnitude(grid: grids.Grid) -> torch.Tensor:
     frequencies = [
         2 * torch.pi * fft.fftfreq(size, step)
         for size, step in zip(grid.shape, grid.step)
@@ -90,10 +89,10 @@ def _angular_frequency_magnitude(grid: grids.Grid) -> Array:
 
 
 def spectral_filter(
-    spectral_density: Callable[[Array], Array],
-    v: Array,
+    spectral_density: Callable[[torch.Tensor], torch.Tensor],
+    v: torch.Tensor,
     grid: grids.Grid,
-) -> Array:
+) -> torch.Tensor:
     """Filter an Array with white noise to match a prescribed spectral density."""
     k = _angular_frequency_magnitude(grid)
     filters = torch.where(k > 0, spectral_density(k), 0.0)

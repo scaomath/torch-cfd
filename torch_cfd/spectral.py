@@ -23,7 +23,6 @@ import torch.fft as fft
 from torch_cfd import grids
 from einops import repeat
 
-Array = torch.Tensor
 Grid = grids.Grid
 
 
@@ -86,7 +85,7 @@ def brick_wall_filter_2d(grid: Grid):
 
 
 def vorticity_to_velocity(
-    grid: Grid, w_hat: Array, rfft_mesh: Optional[Tuple[Array, Array]] = None
+    grid: Grid, w_hat: torch.Tensor, rfft_mesh: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
 ):
     """Constructs a function for converting vorticity to velocity, both in Fourier domain.
 

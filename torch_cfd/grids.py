@@ -30,14 +30,10 @@ import torch
 import torch.fft as fft
 import torch.nn as nn
 import torch.nn.functional as F
-try:
-    from torch.utils._pytree import register_pytree_node
-except:
-    from torch.utils._pytree import _register_pytree_node as register_pytree_node
+
+from torch.utils._pytree import register_pytree_node
 
 from .tensor_utils import split_along_axis
-
-Array = torch.Tensor
 
 
 class BCType:
@@ -133,17 +129,17 @@ class Grid:
         offsets = (torch.eye(d) + torch.ones([d, d])) / 2.0
         return tuple(tuple(float(o) for o in offset) for offset in offsets)
 
-    def stagger(self, v: Tuple[Array, ...]) -> Tuple[Array, ...]:
+    def stagger(self, v: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, ...]:
         """Places the velocity components of `v` on the `Grid`'s cell faces."""
         offsets = self.cell_faces
         return tuple(GridArray(u, o, self) for u, o in zip(v, offsets))
 
-    def center(self, v: Tuple[Array, ...]) -> Tuple[Array, ...]:
+    def center(self, v: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, ...]:
         """Places all arrays in the pytree `v` at the `Grid`'s cell center."""
         offset = self.cell_center
         return lambda u: GridArray(u, offset, self), v
 
-    def axes(self, offset: Optional[Sequence[float]] = None) -> Tuple[Array, ...]:
+    def axes(self, offset: Optional[Sequence[float]] = None) -> Tuple[torch.Tensor, ...]:
         """Returns a tuple of arrays containing the grid points along each axis.
 
         Args:
@@ -167,7 +163,7 @@ class Grid:
             )
         )
 
-    def fft_axes(self) -> Tuple[Array, ...]:
+    def fft_axes(self) -> Tuple[torch.Tensor, ...]:
         """Returns the ordinal frequencies corresponding to the axes.
 
         Transforms each axis into the *ordinal* frequencies for the Fast Fourier
@@ -183,7 +179,7 @@ class Grid:
     def mesh(
         self,
         offset: Optional[Sequence[float]] = None,
-    ) -> Tuple[Array, ...]:
+    ) -> Tuple[torch.Tensor, ...]:
         """Returns an tuple of arrays containing positions in each grid cell.
 
         Args:
@@ -199,21 +195,21 @@ class Grid:
         x, y = torch.meshgrid(*axes, indexing="ij")
         return x.to(self.device), y.to(self.device)
 
-    def fft_mesh(self) -> Tuple[Array, ...]:
+    def fft_mesh(self) -> Tuple[torch.Tensor, ...]:
         """Returns a tuple of arrays containing positions in Fourier space."""
         fft_axes = self.fft_axes()
         kx, ky = torch.meshgrid(*fft_axes, indexing="ij")
         return kx.to(self.device), ky.to(self.device)
 
-    def rfft_mesh(self) -> Tuple[Array, ...]:
+    def rfft_mesh(self) -> Tuple[torch.Tensor, ...]:
         """Returns a tuple of arrays containing positions in rfft space."""
         fft_mesh = self.fft_mesh()
         k_max = math.floor(self.shape[-1] / 2.0)
         return tuple(fmesh[..., : k_max + 1] for fmesh in fft_mesh)
 
     def eval_on_mesh(
-        self, fn: Callable[..., Array], offset: Optional[Sequence[float]] = None
-    ) -> Array:
+        self, fn: Callable[..., torch.Tensor], offset: Optional[Sequence[float]] = None
+    ) -> torch.Tensor:
         """Evaluates the function on the grid mesh with the specified offset.
 
         Args:
@@ -248,7 +244,7 @@ class GridArray(torch.Tensor):
       offset=(1, 0.5) is centered on the right-side edge.
 
     Attributes:
-      data: array values.
+      data: values, a torch.Tensor.
       offset: alignment location of the data with respect to the grid.
       grid: the Grid associated with the array data.
       dtype: type of the array data.
@@ -261,7 +257,7 @@ class GridArray(torch.Tensor):
     # Also don't enforce explicit consistency between data.shape and grid.shape,
     # but similarly they should probably match.
 
-    data: Array = None
+    data: torch.Tensor = None
     offset: Tuple[float, ...] = None
     grid: Grid = None
 
@@ -334,7 +330,7 @@ class GridVariable:
       grid: the Grid associated with the array data.
       dtype: type of the array data.
       shape: lengths of the array dimensions.
-      data: array values.
+      data: values, a torch.Tensor.
       offset: alignment location of the data with respect to the grid.
       grid: the Grid associated with the array data.
     """
@@ -373,7 +369,7 @@ class GridVariable:
         return self.array.shape
 
     @property
-    def data(self) -> Array:
+    def data(self) -> torch.Tensor:
         return self.array.data
 
     @property
@@ -420,7 +416,7 @@ class GridVariable:
                 domain[axis] = (domain[axis][0] + grid.step[axis], domain[axis][1])
         return Grid(shape, domain=tuple(domain))
 
-    def _interior_array(self) -> Array:
+    def _interior_array(self) -> torch.Tensor:
         """Returns only the interior points of self.array."""
         data = self.array.data
         for axis in range(self.grid.ndim):
@@ -557,12 +553,12 @@ def applied(func):
 
 def averaged_offset(*arrays: Union[GridArray, GridVariable]) -> Tuple[float, ...]:
     """Returns the averaged offset of the given arrays."""
-    offsets = torch.as_tensor([array.offset for array in arrays])
+    offsets = torch.as_tensor([torch.Tensor.offset for array in arrays])
     offset = torch.mean(offsets, dim=0)
     return tuple(offset.tolist())
 
 
-def consistent_offset(*arrays: Array) -> Tuple[float, ...]:
+def consistent_offset(*arrays: torch.Tensor) -> Tuple[float, ...]:
     """Returns the unique offset, or raises InconsistentOffsetError."""
     offsets = {array.offset for array in arrays}
     if len(offsets) != 1:
@@ -618,7 +614,7 @@ class BoundaryConditions:
         grid: Grid,
         offset: Optional[Tuple[float, ...]],
         time: Optional[float],
-    ) -> Tuple[Optional[Array], Optional[Array]]:
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Returns Arrays specifying boundary values on the grid along axis.
 
         Args:
@@ -831,7 +827,7 @@ class ConstantBoundaryConditions(BoundaryConditions):
         offset[dim] += padding[0]
         return GridArray(data, tuple(offset), u.grid)
 
-    def values(self, dim: int, grid: Grid) -> Tuple[Optional[Array], Optional[Array]]:
+    def values(self, dim: int, grid: Grid) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Returns boundary values on the grid along axis.
 
         Args:

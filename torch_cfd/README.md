@@ -7,6 +7,18 @@
 
 ## Changelog
 
+### 0.1.0
+- Added a native PyTorch implementation of `scipy.linalg.circulant`: for a 1d array `column`
+  ```python
+  # scipy version
+  mat = scipy.linalg.circulant(column)
+
+  # torch version
+  idx = (n - torch.arange(n)[None].T + torch.arange(n)[None]) % n
+  mat = torch.gather(column[None, ...].expand(n, -1), 1, idx)
+  ```
+
+
 ### 0.0.8
 - Starting from PyTorch 2.6.0, if data are saved using serialization (for loop with `pickle` or `dill`), then `torch.load` will raise an error, if you want to load the data, you can either add this in the imports or re-generate the data using this version.
     ```python
@@ -32,7 +44,7 @@
 - The padding of `torch.nn.functional.pad()` is different from `jax.numpy.pad()`, PyTorch's pad starts from the last dimension, while Jax's pad starts from the first dimension. For example, `F.pad(x, (0, 0, 1, 0, 1, 1))` is equivalent to `jax.numpy.pad(x, ((1, 1), (1, 0), (0, 0)))` for an array of size `(*, t, h, w)`.
 - A handy outer sum, which is usefully in getting the n-dimensional Laplacian in the frequency domain, is implemented as follows to replace `reduce(np.add.outer, eigenvalues)`
     ```python
-    def outer_sum(x: Union[List[Array], Tuple[Array]]) -> Array:
+    def outer_sum(x: Union[List[torch.Tensor], Tuple[torch.Tensor]]) -> torch.Tensor:
         """
         Returns the outer sum of a list of one dimensional arrays
         Example:

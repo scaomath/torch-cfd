@@ -22,15 +22,14 @@ import torch.nn as nn
 
 from . import grids
 
-Array = torch.Tensor
 Grid = grids.Grid
 GridArray = grids.GridArray
 
 
 def forcing_eval(eval_func):
     def wrapper(
-        cls, grid: Grid, field: Optional[Union[Tuple[Array, Array], Array]]
-    ) -> Array:
+        cls, grid: Grid, field: Optional[Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]]
+    ) -> torch.Tensor:
         return eval_func(grid, field)
 
     return wrapper
@@ -67,19 +66,19 @@ class ForcingFn(nn.Module):
         self.device = grid.device if device is None else device
 
     @forcing_eval
-    def velocity_eval(grid: Grid, velocity: Optional[Tuple[Array, Array]]) -> Array:
+    def velocity_eval(grid: Grid, velocity: Optional[Tuple[torch.Tensor, torch.Tensor]]) -> torch.Tensor:
         raise NotImplementedError
 
     @forcing_eval
-    def vorticity_eval(grid: Grid, vorticity: Optional[Array]) -> Array:
+    def vorticity_eval(grid: Grid, vorticity: Optional[torch.Tensor]) -> torch.Tensor:
         raise NotImplementedError
 
     def forward(
         self,
         grid: Optional[Grid],
-        velocity: Optional[Tuple[Array, Array]] = None,
-        vorticity: Optional[Array] = None,
-    ) -> Tuple[Array, Array]:
+        velocity: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        vorticity: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         if not self.vorticity:
             return self.velocity_eval(grid, velocity)
         else:
@@ -129,8 +128,8 @@ class KolmogorovForcing(ForcingFn):
     def velocity_eval(
         self,
         grid: Optional[Grid],
-        velocity: Optional[Tuple[Array, Array]] = None,
-    ) -> Tuple[Array, Array]:
+        velocity: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         offsets = self.offsets
         grid = self.grid if grid is None else grid
         domain_factor = 2 * torch.pi / self.diam
@@ -154,8 +153,8 @@ class KolmogorovForcing(ForcingFn):
     def vorticity_eval(
         self,
         grid: Optional[Grid],
-        vorticity: Optional[Array] = None,
-    ) -> Array:
+        vorticity: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         offsets = self.offsets
         grid = self.grid if grid is None else grid
         domain_factor = 2 * torch.pi / self.diam
@@ -184,7 +183,7 @@ class KolmogorovForcing(ForcingFn):
 
 
 def scalar_potential(potential_func):
-    def wrapper(cls, x: Array, y: Array, s: float, k: float) -> Array:
+    def wrapper(cls, x: torch.Tensor, y: torch.Tensor, s: float, k: float) -> torch.Tensor:
         return potential_func(x, y, s, k)
 
     return wrapper
@@ -222,18 +221,18 @@ class SimpleSolenoidalForcing(ForcingFn):
         )
 
     @scalar_potential
-    def potential(*args, **kwargs) -> Array:
+    def potential(*args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
 
     @scalar_potential
-    def vort_potential(*args, **kwargs) -> Array:
+    def vort_potential(*args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
 
     def velocity_eval(
         self,
         grid: Optional[Grid],
-        velocity: Optional[Tuple[Array, Array]] = None,
-    ) -> Tuple[Array, Array]:
+        velocity: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         offsets = self.offsets
         grid = self.grid if grid is None else grid
         domain_factor = 2 * torch.pi / self.diam
@@ -259,8 +258,8 @@ class SimpleSolenoidalForcing(ForcingFn):
     def vorticity_eval(
         self,
         grid: Optional[Grid],
-        vorticity: Optional[Array] = None,
-    ) -> Array:
+        vorticity: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         offsets = self.offsets
         grid = self.grid if grid is None else grid
         domain_factor = 2 * torch.pi / self.diam
@@ -316,9 +315,9 @@ class SinCosForcing(SimpleSolenoidalForcing):
         )
 
     @scalar_potential
-    def potential(x: Array, y: Array, s: float, k: float) -> Array:
+    def potential(x: torch.Tensor, y: torch.Tensor, s: float, k: float) -> torch.Tensor:
         return s * (torch.sin(k * (x + y)) - torch.cos(k * (x + y)))
 
     @scalar_potential
-    def vort_potential(x: Array, y: Array, s: float, k: float) -> Array:
+    def vort_potential(x: torch.Tensor, y: torch.Tensor, s: float, k: float) -> torch.Tensor:
         return s * (torch.cos(k * (x + y)) + torch.sin(k * (x + y)))

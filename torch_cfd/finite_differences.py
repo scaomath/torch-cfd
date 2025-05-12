@@ -40,7 +40,6 @@ from . import grids
 import numpy as np
 import torch
 
-Array = torch.Tensor
 GridArray = grids.GridArray
 GridVariable = grids.GridVariable
 GridArrayTensor = grids.GridArrayTensor
@@ -145,7 +144,7 @@ def centered_divergence(v: Sequence[GridVariable]) -> GridArray:
     return sum(differences)
 
 
-def laplacian_matrix(n: int, step: float) -> Array:
+def laplacian_matrix(n: int, step: float) -> torch.Tensor:
     """
     Create 1D Laplacian operator matrix, with periodic BC.
     modified the scipy.linalg.circulant implementation to native torch

@@ -25,10 +25,8 @@ import torch
 import torch.fft as fft
 
 
-Array = torch.Tensor
 
-
-def outer_sum(x: Union[List[Array], Tuple[Array]]) -> Array:
+def outer_sum(x: Union[List[torch.Tensor], Tuple[torch.Tensor]]) -> torch.Tensor:
     """
     Returns the outer sum of a list of one dimensional arrays
     Example:
@@ -43,14 +41,14 @@ def outer_sum(x: Union[List[Array], Tuple[Array]]) -> Array:
 
 
 def transform(
-    func: Callable[[Array], Array],
-    operators: Sequence[Array],
+    func: Callable[[torch.Tensor], torch.Tensor],
+    operators: Sequence[torch.Tensor],
     dtype: torch.dtype,
     *,
     hermitian: bool = False,
     circulant: bool = False,
     implementation: Optional[str] = None,
-) -> Callable[[Array], Array]:
+) -> Callable[[torch.Tensor], torch.Tensor]:
     """Apply a linear operator written as a sum of operators on each axis.
 
     Such linear operators are *separable*, and can be written as a sum of tensor
@@ -146,10 +144,10 @@ def transform(
 
 
 def _hermitian_matmul_transform(
-    func: Callable[[Array], Array],
-    operators: Sequence[Array],
+    func: Callable[[torch.Tensor], torch.Tensor],
+    operators: Sequence[torch.Tensor],
     dtype: torch.dtype,
-) -> Callable[[Array], Array]:
+) -> Callable[[torch.Tensor], torch.Tensor]:
     """Fast diagonalization by matrix multiplication along each axis."""
     eigenvalues, eigenvectors = zip(*map(torch.linalg.eigh, operators))
 
@@ -167,7 +165,7 @@ def _hermitian_matmul_transform(
             f"{diagonals.shape} vs {shape}"
         )
 
-    def apply(rhs: Array) -> Array:
+    def apply(rhs: torch.Tensor) -> torch.Tensor:
         if rhs.shape != shape:
             raise ValueError(f"rhs.shape={rhs.shape} does not match shape={shape}")
         if rhs.dtype != dtype:
@@ -186,10 +184,10 @@ def _hermitian_matmul_transform(
 
 
 def _circulant_fft_transform(
-    func: Callable[[Array], Array],
-    operators: Sequence[Array],
+    func: Callable[[torch.Tensor], torch.Tensor],
+    operators: Sequence[torch.Tensor],
     dtype: torch.dtype,
-) -> Callable[[Array], Array]:
+) -> Callable[[torch.Tensor], torch.Tensor]:
     """Fast diagonalization by Fast Fourier Transform."""
     # https://en.wikipedia.org/wiki/Circulant_matrix#Eigenvectors_and_eigenvalues
     eigenvalues = [fft.fft(op[:, 0]) for op in operators]
@@ -203,7 +201,7 @@ def _circulant_fft_transform(
             f"{diagonals.shape} vs {shape}"
         )
 
-    def apply(rhs: Array) -> Array:
+    def apply(rhs: torch.Tensor) -> torch.Tensor:
         if rhs.shape != shape:
             raise ValueError(f"rhs.shape={rhs.shape} does not match shape={shape}")
         return fft.ifftn(diagonals * fft.fftn(rhs)).to(dtype)
@@ -212,10 +210,10 @@ def _circulant_fft_transform(
 
 
 def _circulant_rfft_transform(
-    func: Callable[[Array], Array],
-    operators: Sequence[Array],
+    func: Callable[[torch.Tensor], torch.Tensor],
+    operators: Sequence[torch.Tensor],
     dtype: torch.dtype,
-) -> Callable[[Array], Array]:
+) -> Callable[[torch.Tensor], torch.Tensor]:
     """Fast diagonalization by real-valued Fast Fourier Transform."""
     # https://en.wikipedia.org/wiki/Circulant_matrix#Eigenvectors_and_eigenvalues
     if operators[-1].shape[0] % 2:
@@ -236,7 +234,7 @@ def _circulant_rfft_transform(
             f"{diagonals.shape} vs {summed_eigenvalues.shape}"
         )
 
-    def apply(rhs: Array) -> Array:
+    def apply(rhs: torch.Tensor) -> torch.Tensor:
         if rhs.dtype != dtype:
             raise ValueError(f"rhs.dtype={rhs.dtype} does not match dtype={dtype}")
         return fft.irfftn(diagonals * fft.rfftn(rhs)).to(dtype)
@@ -245,15 +243,15 @@ def _circulant_rfft_transform(
 
 
 def pseudoinverse(
-    v: Array,
-    operators: Sequence[Array],
+    v: torch.Tensor,
+    operators: Sequence[torch.Tensor],
     dtype: torch.dtype,
     *,
     hermitian: bool = False,
     circulant: bool = False,
     implementation: Optional[str] = None,
     cutoff: Optional[float] = None,
-) -> Callable[[Array], Array]:
+) -> Callable[[torch.Tensor], torch.Tensor]:
     """Invert a linear operator written as a sum of operators on each axis.
 
     Args:

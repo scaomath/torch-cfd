@@ -28,7 +28,6 @@ from torch_cfd.spectral import (
     vorticity_to_velocity,
 )
 
-Array = torch.Tensor
 Grid = grids.Grid
 Params = Union[nn.ParameterDict, Dict]
 
@@ -93,7 +92,7 @@ class ImplicitExplicitODE(nn.Module):
     def implicit_solve(
         self,
         *,
-        u: Array,
+        u: torch.Tensor,
         step_size: float,
     ):
         """Solves `u - step_size * implicit_terms(u) = f` for u."""
@@ -101,8 +100,8 @@ class ImplicitExplicitODE(nn.Module):
 
     def residual(
         self,
-        u: Array,
-        u_t: Array,
+        u: torch.Tensor,
+        u_t: torch.Tensor,
     ):
         """Computes the residual of the PDE."""
         raise NotImplementedError
@@ -174,11 +173,11 @@ class IMEXStepper(nn.Module):
 
     def _imex(
         self,
-        u: Array,
+        u: torch.Tensor,
         dt: float,
         equation: ImplicitExplicitODE,
         params: Optional[Params] = None,
-    ) -> Array:
+    ) -> torch.Tensor:
         """Standard first order IMEX with Crank-Nicolson or Forward-Backward Euler."""
         params = self.params if params is None else params
         alpha = params["alpha"]
@@ -193,11 +192,11 @@ class IMEXStepper(nn.Module):
 
     def _rk2_crank_nicolson(
         self,
-        u: Array,
+        u: torch.Tensor,
         dt: float,
         equation: ImplicitExplicitODE,
         params: Optional[Params] = None,
-    ) -> Array:
+    ) -> torch.Tensor:
         """Time stepping via Crank-Nicolson and 2nd order Runge-Kutta (Heun).
 
         Args:
@@ -230,11 +229,11 @@ class IMEXStepper(nn.Module):
 
     def forward(
         self,
-        u: Array,
+        u: torch.Tensor,
         dt: float,
         equation: ImplicitExplicitODE,
         params: Optional[Params] = None,
-    ) -> Array:
+    ) -> torch.Tensor:
         """
         Perform a time step using the configured IMEX scheme.
 
@@ -328,11 +327,11 @@ class RK4CrankNicolsonStepper(IMEXStepper):
 
     def forward(
         self,
-        u: Array,
+        u: torch.Tensor,
         dt: float,
         equation: ImplicitExplicitODE,
         params: Optional[Params] = None,
-    ) -> Array:
+    ) -> torch.Tensor:
         """
         Input:
             - w^{t_i} (B, n, n)
@@ -406,8 +405,8 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
 
     def residual(
         self,
-        vhat: Array,
-        vt_hat: Array,
+        vhat: torch.Tensor,
+        vt_hat: torch.Tensor,
     ):
         residual = vt_hat - self.explicit_terms(vhat) - self.implicit_terms(vhat)
         return residual
