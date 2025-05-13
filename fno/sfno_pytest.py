@@ -11,7 +11,7 @@ from .sfno import (
     SpectralConvS,
     SpectralConvT,
 )
-from torch_cfd.equations import *
+from torch_cfd.spectral import *
 from contextlib import contextmanager
 
 
