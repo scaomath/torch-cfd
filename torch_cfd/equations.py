@@ -379,9 +379,8 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         drag: float = 0.0,
         smooth: bool = True,
         forcing_fn: Optional[Callable] = None,
-        solver: Optional[Callable] = RK4CrankNicolsonStepper,
-        requires_grad: bool = False,
-        **solver_kwargs,
+        solver: IMEXStepper = None,
+        **kwargs,
     ):
         super().__init__()
         self.viscosity = viscosity
@@ -389,7 +388,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         self.drag = drag
         self.smooth = smooth
         self.forcing_fn = forcing_fn
-        self.solver = solver(requires_grad=requires_grad, **solver_kwargs)
+        self.solver = solver
         self._initialize()
 
     def _initialize(self):

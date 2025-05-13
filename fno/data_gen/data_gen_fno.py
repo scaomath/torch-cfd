@@ -168,14 +168,12 @@ def main(args):
         device=device,
         dtype=torch.float64,
     )
-
+    step_fn = IMEXStepper(order=2)
     ns2d = NavierStokes2DSpectral(
         viscosity=visc,
         grid=grid,
         smooth=True,
         forcing_fn=forcing_fn,
-        solver=IMEXStepper,
-        order=2,
     ).to(device)
 
     if os.path.exists(data_filepath) and not force_rerun:
