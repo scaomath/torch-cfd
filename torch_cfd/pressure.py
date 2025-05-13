@@ -21,7 +21,9 @@ from typing import Callable, Optional
 
 import torch
 
-from . import grids, fast_diagonalization as solver, finite_differences as fd
+from torch_cfd import grids
+from torch_cfd import fast_diagonalization as solver
+from torch_cfd import finite_differences as fdm
 
 
 Array = grids.Array
@@ -91,8 +93,8 @@ def solve_fast_diag(
         # only matmul implementation supports non-circulant matrices
         implementation = "matmul"
     grid = grids.consistent_grid(*v)
-    rhs = fd.divergence(v)
-    laplacians = list(map(fd.laplacian_matrix, grid.shape, grid.step))
+    rhs = fdm.divergence(v)
+    laplacians = list(map(fdm.laplacian_matrix, grid.shape, grid.step))
     laplacians = [lap.to(grid.device) for lap in laplacians]
     rhs_transformed = _rhs_transform(rhs, pressure_bc)
     pinv = solver.pseudoinverse(
@@ -126,6 +128,6 @@ def projection(
 
     q = solve(v, q0, pressure_bc)
     q = pressure_bc.impose_bc(q)
-    q_grad = fd.forward_difference(q)
+    q_grad = fdm.forward_difference(q)
     v_projected = tuple(u.bc.impose_bc(u.array - q_g) for u, q_g in zip(v, q_grad))
     return v_projected

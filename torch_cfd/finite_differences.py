@@ -36,7 +36,7 @@ Example:
 
 import typing
 from typing import Optional, Sequence, Tuple
-from . import grids
+from torch_cfd import grids
 import numpy as np
 import torch
 

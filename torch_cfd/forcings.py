@@ -20,7 +20,7 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from . import grids
+from torch_cfd import grids
 
 Grid = grids.Grid
 GridArray = grids.GridArray

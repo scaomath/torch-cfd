@@ -22,7 +22,7 @@ from typing import Callable, Optional, Sequence
 import torch
 import torch.fft as fft
 
-from . import grids, pressure
+from torch_cfd import grids, pressure
 
 GridArray = grids.GridArray
 GridArrayVector = grids.GridArrayVector
