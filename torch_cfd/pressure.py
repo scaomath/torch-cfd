@@ -26,7 +26,6 @@ from torch_cfd import fast_diagonalization as solver
 from torch_cfd import finite_differences as fdm
 
 
-Array = grids.Array
 GridArray = grids.GridArray
 GridArrayVector = grids.GridArrayVector
 GridVariable = grids.GridVariable

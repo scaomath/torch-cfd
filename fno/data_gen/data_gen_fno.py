@@ -17,7 +17,7 @@ import torch.fft as fft
 import torch.nn.functional as F
 
 from grf import GRF2d
-from solvers import *
+from solvers import get_trajectory_imex
 from data_utils import *
 from torch_cfd.grids import *
 from torch_cfd.equations import *

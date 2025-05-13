@@ -13,9 +13,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
-import torch.fft as fft
 import xarray
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 feval = lambda s: eval("lambda x, y:" + s, globals())
 

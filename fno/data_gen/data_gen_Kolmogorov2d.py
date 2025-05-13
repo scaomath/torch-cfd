@@ -7,9 +7,7 @@
 
 # THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-import os, sys
-
-import dill
+import os
 
 import torch
 import torch.fft as fft
@@ -20,11 +18,9 @@ from torch_cfd.initial_conditions import *
 from torch_cfd.finite_differences import *
 from torch_cfd.forcings import *
 
-from tqdm import tqdm
 from data_utils import *
-from solvers import *
 
-import logging
+from solvers import get_trajectory_imex
 
 from fno.pipeline import DATA_PATH, LOG_PATH
 
@@ -69,7 +65,7 @@ def main(args):
     random_state = args.seed
     peak_wavenumber = args.peak_wavenumber  # 4
     diam = args.diam  # "2 * torch.pi" default
-    diam = eval(diam) if isinstance(diam, str) else diam  # 
+    diam = eval(diam) if isinstance(diam, str) else diam  #
     force_rerun = args.force_rerun
 
     logger = logging.getLogger()
@@ -96,7 +92,7 @@ def main(args):
     if data_exist and not force_rerun:
         logger.info(f"File {filename} exists with current data as follows:")
         data = torch.load(data_filepath)
-        
+
         for key, v in data.items():
             if isinstance(v, torch.Tensor):
                 logger.info(f"{key:<12} | {v.shape} | {v.dtype}")
@@ -114,7 +110,9 @@ def main(args):
     device = torch.device("cuda:0" if cuda else "cpu")
 
     torch.set_default_dtype(torch.float64)
-    logger.info(f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}")
+    logger.info(
+        f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}"
+    )
 
     grid = Grid(shape=(n, n), domain=((0, diam), (0, diam)), device=device)
 
@@ -183,7 +181,9 @@ def main(args):
                 f"variable: {field} | shape: {value.shape} | dtype: {value.dtype}"
             )
             if subsample > 1:
-                assert value.ndim == 4, f"Subsampling only works for (b, c, h, w) tensors, current shape: {value.shape}"
+                assert (
+                    value.ndim == 4
+                ), f"Subsampling only works for (b, c, h, w) tensors, current shape: {value.shape}"
                 value = F.interpolate(value, size=(ns, ns), mode="bilinear")
             result[field] = value
 
