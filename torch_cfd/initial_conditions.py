@@ -93,7 +93,7 @@ def spectral_filter(
     v: torch.Tensor,
     grid: grids.Grid,
 ) -> torch.Tensor:
-    """Filter an Array with white noise to match a prescribed spectral density."""
+    """Filter a torch.Tensor with white noise to match a prescribed spectral density."""
     k = _angular_frequency_magnitude(grid)
     filters = torch.where(k > 0, spectral_density(k), 0.0)
     # The output signal can safely be assumed to be real if our input signal was

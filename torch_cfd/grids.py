@@ -285,7 +285,7 @@ class GridArray(torch.Tensor):
     def to(self, *args, **kwargs):
         return GridArray(self.data.to(*args, **kwargs), self.offset, self.grid)
 
-    _HANDLED_TYPES = (numbers.Number, Array)
+    _HANDLED_TYPES = (numbers.Number, torch.Tensor)
 
     @classmethod
     def __torch_function__(self, ufunc, types, args=(), kwargs=None):
@@ -483,7 +483,7 @@ class GridVariable:
 GridVariableVector = Tuple[GridVariable, ...]
 
 
-class GridArrayTensor(Array):
+class GridArrayTensor(torch.Tensor):
     """A numpy array of GridArrays, representing a physical tensor field.
 
     Packing tensor coordinates into a numpy array of dtype object is useful

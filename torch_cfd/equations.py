@@ -450,7 +450,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
     def step(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
-    def forward(self, vort_hat, dt, steps=1):
+    def forward(self, vort_hat, dt, steps=1) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         vort_hat: (B, kx, ky) or (n_t, kx, ky) or (kx, ky)
         - if rfft2 is used then the shape is (*, nx, ny//2+1)
