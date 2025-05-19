@@ -22,14 +22,37 @@ import torch.nn as nn
 
 from torch_cfd import grids
 
+
 Grid = grids.Grid
 GridArray = grids.GridArray
 
 
 def forcing_eval(eval_func):
+    """
+    A decorator for forcing evaluators.
+    This decorator simplifies the conversion of a standalone forcing evaluation function
+    to a method that can be called on a class instance. It standardizes the interface
+    for forcing functions by ensuring they accept grid and field parameters.
+    Parameters
+    ----------
+    eval_func : callable
+        The forcing evaluation function to be decorated. Should accept grid and field parameters
+        and return a torch.Tensor representing the forcing term.
+    Returns
+    -------
+    callable
+        A wrapper function that can be used as a class method for evaluating forcing terms.
+        The wrapper maintains the same signature as the decorated function but ignores the
+        class instance (self) parameter.
+    Examples
+    --------
+    @forcing_eval
+    def constant_forcing(field, grid):
+        return torch.ones_like(field)
+    """
     def wrapper(
         cls, grid: Grid, field: Optional[Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]]
-    ) -> torch.Tensor:
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
         return eval_func(grid, field)
 
     return wrapper
@@ -41,13 +64,20 @@ class ForcingFn(nn.Module):
 
     Args:
     vorticity: whether the forcing function is a vorticity forcing
+
+    Notes: 
+    - the grid variable is the first argument in the __call__ so that the second variable can be velocity or vorticity
+    - forcing term does not have boundary conditions, when being evaluated, it is simply added to the velocity or vorticity (with the same grid)
+
+    TODO: 
+    - [ ] MAC grid the components of velocity does not live on the same grid.
     """
 
     def __init__(
         self,
         grid: Grid,
         scale: float = 1,
-        k: int = 1,
+        wave_number: int = 1,
         diam: float = 1.0,
         swap_xy: bool = False,
         vorticity: bool = False,
@@ -58,7 +88,7 @@ class ForcingFn(nn.Module):
         super().__init__()
         self.grid = grid
         self.scale = scale
-        self.k = k
+        self.wave_number = wave_number
         self.diam = diam
         self.swap_xy = swap_xy
         self.vorticity = vorticity
@@ -66,7 +96,7 @@ class ForcingFn(nn.Module):
         self.device = grid.device if device is None else device
 
     @forcing_eval
-    def velocity_eval(grid: Grid, velocity: Optional[Tuple[torch.Tensor, torch.Tensor]]) -> torch.Tensor:
+    def velocity_eval(grid: Grid, velocity: Optional[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
     @forcing_eval
@@ -75,7 +105,7 @@ class ForcingFn(nn.Module):
 
     def forward(
         self,
-        grid: Optional[Grid],
+        grid: Optional[Union[Grid, Tuple[Grid, Grid]]] = None,
         velocity: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         vorticity: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -137,18 +167,16 @@ class KolmogorovForcing(ForcingFn):
         if self.swap_xy:
             x = grid.mesh(offsets[1])[0]
             v = GridArray(
-                self.scale * torch.sin(self.k * domain_factor * x), offsets[1], grid
+                self.scale * torch.sin(self.wave_number * domain_factor * x), offsets[1], grid
             )
             u = GridArray(torch.zeros_like(v.data), (1, 1 / 2), grid)
-            f = (u, v)
         else:
             y = grid.mesh(offsets[0])[1]
             u = GridArray(
-                self.scale * torch.sin(self.k * domain_factor * y), offsets[0], grid
+                self.scale * torch.sin(self.wave_number * domain_factor * y), offsets[0], grid
             )
             v = GridArray(torch.zeros_like(u.data), (1 / 2, 1), grid)
-            f = (u, v)
-        return f
+        return tuple((u, v))
 
     def vorticity_eval(
         self,
@@ -163,9 +191,9 @@ class KolmogorovForcing(ForcingFn):
             x = grid.mesh(offsets[1])[0]
             w = GridArray(
                 -self.scale
-                * self.k
+                * self.wave_number
                 * domain_factor
-                * torch.cos(self.k * domain_factor * x),
+                * torch.cos(self.wave_number * domain_factor * x),
                 offsets[1],
                 grid,
             )
@@ -173,9 +201,9 @@ class KolmogorovForcing(ForcingFn):
             y = grid.mesh(offsets[0])[1]
             w = GridArray(
                 -self.scale
-                * self.k
+                * self.wave_number
                 * domain_factor
-                * torch.cos(self.k * domain_factor * y),
+                * torch.cos(self.wave_number * domain_factor * y),
                 offsets[0],
                 grid,
             )
@@ -214,7 +242,7 @@ class SimpleSolenoidalForcing(ForcingFn):
             *args,
             scale=scale,
             diam=diam,
-            k=k,
+            wave_number=k,
             offsets=offsets,
             vorticity=vorticity,
             **kwargs,
@@ -236,8 +264,8 @@ class SimpleSolenoidalForcing(ForcingFn):
         offsets = self.offsets
         grid = self.grid if grid is None else grid
         domain_factor = 2 * torch.pi / self.diam
-        k = self.k * domain_factor
-        scale = 0.5 * self.scale / (2 * torch.pi) / self.k
+        k = self.wave_number * domain_factor
+        scale = 0.5 * self.scale / (2 * torch.pi) / self.wave_number
 
         if self.swap_xy:
             x = grid.mesh(offsets[1])[0]
@@ -245,15 +273,13 @@ class SimpleSolenoidalForcing(ForcingFn):
             rot = self.potential(x, y, scale, k)
             v = GridArray(rot, offsets[1], grid)
             u = GridArray(-rot, (1, 1 / 2), grid)
-            f = (u, v)
         else:
             x = grid.mesh(offsets[0])[0]
             y = grid.mesh(offsets[1])[1]
             rot = self.potential(x, y, scale, k)
             u = GridArray(rot, offsets[0], grid)
             v = GridArray(-rot, (1 / 2, 1), grid)
-            f = (u, v)
-        return f
+        return tuple((u, v))
 
     def vorticity_eval(
         self,
@@ -263,7 +289,7 @@ class SimpleSolenoidalForcing(ForcingFn):
         offsets = self.offsets
         grid = self.grid if grid is None else grid
         domain_factor = 2 * torch.pi / self.diam
-        k = self.k * domain_factor
+        k = self.wave_number * domain_factor
         scale = self.scale
 
         if self.swap_xy:

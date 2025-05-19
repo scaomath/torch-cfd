@@ -1,6 +1,6 @@
 ## TODO
 
-- [ ] add native PyTorch implementation for applying `torch.linalg` and `torch.fft` function directly on `GridArray`.
+- [x] add native PyTorch implementation for applying `torch.linalg` and `torch.fft` function directly on `GridArray`.
 - [x] add discrete Helmholtz decomposition in both spatial and spectral domains.
 - [x] adjust the function to act on `(batch, time, *spatial)` tensor, currently only `(*spatial)` is supported.
 - [x] add native vorticity computation, instead of taking FDM for pseudo-spectral.
@@ -8,15 +8,21 @@
 ## Changelog
 
 ### 0.1.0
-- Added a native PyTorch implementation of `scipy.linalg.circulant`: for a 1d array `column`
-  ```python
-  # scipy version
-  mat = scipy.linalg.circulant(column)
+- Implemented the FVM method on a staggered MAC grid (pressure on cell centers).
+- Added native PyTorch implementation for applying `torch.linalg` and `torch.fft` functions directly on `GridArray` and `GridVariable`.
+- Added native implementation of arithmetic manipulation directly on `GridVariableVector`.
+- Added several helper functions `consistent_grid` to replace `consistent_grid_arrays`.
+- Removed dependence of `from torch.utils._pytree import register_pytree_node`
+- Minor notes:
+  - Added native PyTorch dense implementation of `scipy.linalg.circulant`: for a 1d array `column`
+    ```python
+    # scipy version
+    mat = scipy.linalg.circulant(column)
 
-  # torch version
-  idx = (n - torch.arange(n)[None].T + torch.arange(n)[None]) % n
-  mat = torch.gather(column[None, ...].expand(n, -1), 1, idx)
-  ```
+    # torch version
+    idx = (n - torch.arange(n)[None].T + torch.arange(n)[None]) % n
+    mat = torch.gather(column[None, ...].expand(n, -1), 1, idx)
+    ```
 
 
 ### 0.0.8

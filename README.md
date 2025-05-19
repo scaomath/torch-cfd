@@ -42,6 +42,7 @@ Data generation instructions are available in the [SFNO folder](./fno).
 ## Examples
 - Demos of different simulation setups:
   - [2D simulation with a pseudo-spectral solver](./examples/Kolmogrov2d_rk4_cn_forced_turbulence.ipynb)
+  - [2D simulation with a finite volume solver](./examples/Kolmogrov2d_rk4_fvm_forced_turbulence.ipynb)
 - Demos of Spatiotemporal FNO's training and evaluation using the neural operator-assisted fluid simulation pipelines
   - [Training of SFNO for only 15 epochs for the isotropic turbulence example](./examples/ex2_SFNO_train.ipynb)
   - [Training of SFNO for only ***10*** epochs with 1k samples and reach `1e-2` level of relative error](./examples/ex2_SFNO_train_fnodata.ipynb) using the data in the FNO paper, which to our best knowledge no operator learner can do this in <100 epochs in the small data regime.
@@ -56,6 +57,7 @@ The Apache 2.0 License in the root folder applies to the `torch-cfd` folder of t
 ## Contributions
 PR welcome. Currently, the port of `torch-cfd` currently includes:
 - The pseudospectral method for vorticity uses anti-aliasing filtering techniques for nonlinear terms to maintain stability.
+- The finite volume method on a MAC grid for velocity, and using the projection scheme to impose the divergence free condition.
 - Temporal discretization: Currently only RK4 temporal discretization uses explicit time-stepping for advection and either implicit or explicit time-stepping for diffusion.
 - Boundary conditions: only periodic boundary conditions.
 
