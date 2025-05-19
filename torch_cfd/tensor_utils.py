@@ -22,8 +22,6 @@ from typing import Any, Callable, List, Sequence, Tuple, Union
 import torch
 import torch.utils._pytree as pytree
 
-Array = torch.Tensor
-
 def _normalize_axis(axis: int, ndim: int) -> int:
     """Validates and returns positive `axis` value."""
     if not -ndim <= axis < ndim:
@@ -39,7 +37,7 @@ def slice_along_axis(
     """Returns slice of `inputs` defined by `idx` along axis `axis`.
 
     Args:
-      inputs: array or a tuple of arrays to slice.
+      inputs: tensor or a tuple of tensors to slice.
       axis: axis along which to slice the `inputs`.
       idx: index or slice along axis `axis` that is returned.
       expect_same_dims: whether all arrays should have same number of dimensions.

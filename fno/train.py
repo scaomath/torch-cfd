@@ -21,7 +21,7 @@ from utils import *
 from pipeline import *
 from data_gen import *
 import matplotlib.pyplot as plt
-from datasets import BochnerDataset
+from datasets import SpatioTemporalDataset
 from losses import SobolevLoss
 from torch.utils.data import DataLoader
 
@@ -102,15 +102,15 @@ def main(args):
         logger.info(f"Training: first {Ntrain} samples at {train_path}")
         logger.info(f"Validation: last {Nval} samples at {val_path}")
         logger.info(f"Training and validating on {n}x{n} grid")
-        train_dataset = BochnerDataset(
-            datapath=train_path,
+        train_dataset = SpatioTemporalDataset(
+            data_path=train_path,
             n_samples=Ntrain,
             fields=[fs],
             steps=time_steps,
             out_steps=out_steps,
         )
-        val_dataset = BochnerDataset(
-            datapath=val_path,
+        val_dataset = SpatioTemporalDataset(
+            data_path=val_path,
             n_samples=Nval,
             fields=[fs],
             steps=time_steps,
@@ -212,8 +212,8 @@ def main(args):
         logger.info(f"Testing data: {test_path}")
         logger.info(f"Testing on {n_test}x{n_test} grid")
         logger.info(f"Testing dtype is {torch.get_default_dtype()}")
-        test_dataset = BochnerDataset(
-            datapath=test_path,
+        test_dataset = SpatioTemporalDataset(
+            data_path=test_path,
             n_samples=Ntest,
             fields=[fs],
             T_start=30,

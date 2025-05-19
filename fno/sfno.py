@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from .base import *
-from torch_cfd.equations import (
+from torch_cfd.spectral import (
     fft_expand_dims,
     fft_mesh_2d,
     spectral_div_2d,

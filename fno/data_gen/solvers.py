@@ -190,7 +190,7 @@ def imex_crank_nicolson_step(
 
 def get_trajectory_imex(
     equation: ImplicitExplicitODE,
-    w0: Array,
+    w0: torch.Tensor,
     dt: float,
     num_steps: int = 1,
     record_every_steps: int = 1,

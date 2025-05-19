@@ -14,10 +14,8 @@ import torch.nn.functional as F
 from einops import repeat
 from tensordict import TensorDict
 from torch.utils.data import Dataset
-try:
-    from .utils import *
-except:
-    from utils import *
+
+from .utils import *
 
 
 class UnitGaussianNormalizer(nn.Module):
@@ -46,9 +44,9 @@ class UnitGaussianNormalizer(nn.Module):
             setattr(self, k, v)
         return self
 
-    def _fit_transform(self, x):
-        mean = torch.as_tensor(x.mean(0))
-        std = torch.as_tensor(x.std(0))
+    def _fit_transform(self, x: torch.Tensor):
+        mean = torch.as_tensor(x.mean(0), dtype=torch.float32)
+        std = torch.as_tensor(x.std(0), dtype=torch.float32)
         x_transformed = (x - mean) / (std + self.eps)
         self.register_buffer("mean", mean)
         self.register_buffer("std", std)
@@ -57,7 +55,7 @@ class UnitGaussianNormalizer(nn.Module):
     def fit_transform(self, *args, **kwargs):
         return self._fit_transform(*args, **kwargs)
 
-    def _transform(self, x, align_shapes=False, **kwargs):
+    def _transform(self, x: torch.Tensor, align_shapes=False, **kwargs):
         if hasattr(self, "mean"):
             mean, std = self.mean, self.std
             if align_shapes:
@@ -70,7 +68,9 @@ class UnitGaussianNormalizer(nn.Module):
     def transform(self, *args, **kwargs):
         return self._transform(*args, **kwargs)
 
-    def inverse_transform(self, x, sample_idx=None, align_shapes=True, **kwargs):
+    def inverse_transform(
+        self, x: torch.Tensor, sample_idx=None, align_shapes=True, **kwargs
+    ):
         std = (self.std + self.eps).to(x.device)
         mean = self.mean.to(x.device)
         if align_shapes:
@@ -90,7 +90,7 @@ class UnitGaussianNormalizer(nn.Module):
         return self.inverse_transform(*args, **kwargs)
 
     @staticmethod
-    def _align_shapes(x, mean, std, **kwargs):
+    def _align_shapes(x: torch.Tensor, mean: torch.Tensor, std: torch.Tensor, **kwargs):
         """
         x: (bsz, m, m, C) or (bsz, m, m) or (bsz, C, m, m)
         mean: (n, n, C) or (n, n) or (C, n, n)
@@ -113,7 +113,7 @@ class SpatialGaussianNormalizer(UnitGaussianNormalizer):
         """
         self.device = None
 
-    def _fit_transform(self, x):
+    def _fit_transform(self, x: torch.Tensor):
         mean = x.mean((0, -1)).unsqueeze(-1)
         std = x.std((0, -1)).unsqueeze(-1)
         self.register_buffer("mean", mean)
@@ -188,6 +188,7 @@ class NavierStokesDataset(Dataset):
         PyTorch dataset overhauled for the Navier-Stokes turbulent
         regime data using the vorticity formulation from Li et al 2020
         https://github.com/zongyi-li/fourier_neural_operator
+        For (2+1)D tasks
 
         x: input (N, n, n, T_0:T_1)
         pos: x, y coords flattened, (n*n, 2)
@@ -369,10 +370,10 @@ class NavierStokesDataset(Dataset):
         )
 
 
-class BochnerDataset(Dataset):
+class SpatioTemporalDataset(Dataset):
     def __init__(
         self,
-        datapath: PathLike,
+        data_path: PathLike,
         n_samples: int = 1024,
         train=True,
         fields=["vorticity", "stream"],
@@ -390,7 +391,7 @@ class BochnerDataset(Dataset):
         input is (N, n, n, T_0:T_1)
         output is (N, n, n, T_1+1:T_2)
         """
-        self.datapath = datapath
+        self.data_path = data_path
         self.n_samples = n_samples
         self.train = train
         self.fields = fields
@@ -409,7 +410,7 @@ class BochnerDataset(Dataset):
         torch-cfd generates time dimension
         in dim = -3
         """
-        data = torch.load(self.datapath)
+        data = torch.load(self.data_path)
         N = data[self.fields[0]].size(0)
         self.total_steps = data[self.fields[0]].size(1)
         data = {key: val for key, val in data.items() if key in self.fields}
@@ -424,34 +425,38 @@ class BochnerDataset(Dataset):
             for key, val in data.items():
                 data[key] = val.permute(0, 2, 3, 1)
         self.data = data
-        self.data_input = data.clone() 
+        self.data_input = data.clone()
         # this is the transformed data
 
     def __getitem__(self, idx, start_steps=None):
         if start_steps is None:
             if self.T_start is None:
-                start_steps = np.random.randint(0, self.total_steps - (self.out_steps + self.steps + 1))
+                start_steps = np.random.randint(
+                    0, self.total_steps - (self.out_steps + self.steps + 1)
+                )
             else:
                 start_steps = self.T_start
         inp_slice = slice(start_steps, start_steps + self.steps)
-        out_slice = slice(start_steps + self.steps, start_steps + self.steps + self.out_steps)
+        out_slice = slice(
+            start_steps + self.steps, start_steps + self.steps + self.out_steps
+        )
 
         inp = dict()
         out = dict()
         for field in self.fields:
-            inp[field] = self.data_input[field][idx, ..., inp_slice].to(
-                self.dtype
-            )
+            inp[field] = self.data_input[field][idx, ..., inp_slice].to(self.dtype)
             out[field] = self.data[field][idx, ..., out_slice].to(self.dtype)
-        inp['time_steps'] = torch.arange(start_steps, start_steps+self.steps)
-        out['time_steps'] = torch.arange(start_steps+self.steps, start_steps+self.steps+self.out_steps)
+        inp["time_steps"] = torch.arange(start_steps, start_steps + self.steps)
+        out["time_steps"] = torch.arange(
+            start_steps + self.steps, start_steps + self.steps + self.out_steps
+        )
         return inp, out
 
 
-class BochnerDatasetFixed(BochnerDataset):
+class SpatioTemporalDatasetFixedTime(SpatioTemporalDataset):
     def __init__(
         self,
-        datapath: PathLike,
+        data_path: PathLike,
         n_samples: int = 1024,
         train=True,
         fields=["vorticity", "stream"],
@@ -461,18 +466,18 @@ class BochnerDatasetFixed(BochnerDataset):
         out_steps=10,
         inp_normalizer: Union[bool, nn.ModuleDict] = None,
         normalize_space_only: bool = False,
-        out_normalizer= True,
+        out_normalizer=True,
         dtype=torch.float32,
     ):
         """
-        BochnerDatasetFixed for the Bochner space-like dataset
+        SpatioTemporalDatasetFixedTime for the Bochner space-like dataset
         but with fixed time steps used by FNO3d
-        since this pipeline needs 
+        since this pipeline needs
         - add 3d grid to the data
         - add the normalizer
         """
         super().__init__(
-            datapath=datapath,
+            data_path=data_path,
             n_samples=n_samples,
             train=train,
             fields=fields,
@@ -497,12 +502,14 @@ class BochnerDatasetFixed(BochnerDataset):
         T_start = self.T_start
         steps = self.steps
         T = self.out_steps
-        data_input = self.data_input # (N, n, n, T)
-        data_out = self.data # (N, n, n, T)
+        data_input = self.data_input  # (N, n, n, T)
+        data_out = self.data  # (N, n, n, T)
         for field in self.fields:
-            inp = data_input[field][..., T_start : T_start +  steps]
-            self.data_input[field] = inp.permute(0, 3, 1, 2) # (N, T, n, n)
-            self.data[field] = data_out[field][..., T_start + steps: T_start +  steps + T] 
+            inp = data_input[field][..., T_start : T_start + steps]
+            self.data_input[field] = inp.permute(0, 3, 1, 2)  # (N, T, n, n)
+            self.data[field] = data_out[field][
+                ..., T_start + steps : T_start + steps + T
+            ]
             # output is (N, n, n, T)
 
     def normalize(self, data, normalizer):
@@ -527,20 +534,22 @@ class BochnerDatasetFixed(BochnerDataset):
         return data, normalizer
 
     def _normalize(self):
-        self.data_input, self.inp_normalizer = self.normalize(self.data_input, self.inp_normalizer)
+        self.data_input, self.inp_normalizer = self.normalize(
+            self.data_input, self.inp_normalizer
+        )
         self.data, self.out_normalizer = self.normalize(self.data, self.out_normalizer)
 
     def _add_grid(self):
         """
         preset a 3D PE (3, n, n, T)
         """
-        n, n, n_t = self.data[self.fields[0]].shape[1:] # output shape
+        n, n, n_t = self.data[self.fields[0]].shape[1:]  # output shape
         # (*, n, n, T) T is already the sliced data
         gridx = torch.linspace(0, 1, n, dtype=self.dtype)
         gridy = torch.linspace(0, 1, n, dtype=self.dtype)
         gridt = torch.linspace(0, 1, n_t, dtype=self.dtype)
         gridx, gridy, gridt = torch.meshgrid(gridx, gridy, gridt, indexing="ij")
-        self.grid = torch.stack((gridx, gridy, gridt)) # (3, n, n, T)
+        self.grid = torch.stack((gridx, gridy, gridt))  # (3, n, n, T)
 
     def __getitem__(self, idx):
         inp = dict()
