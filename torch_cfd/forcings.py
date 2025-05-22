@@ -144,6 +144,7 @@ class KolmogorovForcing(ForcingFn):
         diam=2 * torch.pi,
         offsets=((0, 0), (0, 0)),
         vorticity=False,
+        wave_number=1,
         *args,
         **kwargs,
     ):
@@ -152,6 +153,7 @@ class KolmogorovForcing(ForcingFn):
             diam=diam,
             offsets=offsets,
             vorticity=vorticity,
+            wave_number=wave_number,
             **kwargs,
         )
 

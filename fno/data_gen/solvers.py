@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from einops import repeat
 from torch.linalg import norm
 from torch_cfd.equations import *
+from tqdm.auto import tqdm
 
 TQDM_ITERS = 200
 

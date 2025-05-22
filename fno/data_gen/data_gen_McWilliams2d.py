@@ -12,14 +12,14 @@ import os
 import torch
 import torch.fft as fft
 
-from torch_cfd.grids import *
+from torch_cfd.grids import Grid
+from torch_cfd.initial_conditions import vorticity_field
 from torch_cfd.equations import *
-from torch_cfd.initial_conditions import *
-from torch_cfd.finite_differences import *
-from torch_cfd.forcings import *
 
-from data_utils import *
 from solvers import get_trajectory_imex
+from data_utils import *
+
+import logging
 
 from fno.pipeline import DATA_PATH, LOG_PATH
 
@@ -38,6 +38,9 @@ def main(args):
 
     Training dataset with Re=5k:
     >>> python data_gen_McWilliams2d.py --num-samples 1152 --batch-size 128 --grid-size 512 --subsample 1 --Re 5e3 --dt 5e-4 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi"
+
+    Demo dataset to test if the data generation works:
+    >>> python data_gen_McWilliams2d.py --num-samples 4 --batch-size 2 --grid-size 256 --subsample 1 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double --demo
 
     """
     args = args.parse_args()
@@ -84,6 +87,9 @@ def main(args):
     dtype_str = "_fp64" if args.double else ""
     filename = args.filename
     if filename is None:
+        # filename = f"McWilliams2d{dtype_str}_{ns}x{ns}_N{total_samples}_v{viscosity:.0e}_T{num_snapshots}.pt".replace(
+        #     "e-0", "e-"
+        # )
         filename = f"McWilliams2d{dtype_str}_{ns}x{ns}_N{total_samples}_Re{int(Re)}_T{num_snapshots}.pt"
         args.filename = filename
     data_filepath = os.path.join(DATA_PATH, filename)
@@ -137,7 +143,11 @@ def main(args):
             for j in range(warmup_steps):
                 vort_hat, _ = ns2d.step(vort_hat, dt)
                 if j % 100 == 0:
-                    desc = datetime.now().strftime("%d-%b-%Y %H:%M:%S") + " - Warmup"
+                    vort_norm = torch.linalg.norm(fft.irfft2(vort_hat)).item() / n
+                    desc = (
+                        datetime.now().strftime("%d-%b-%Y %H:%M:%S")
+                        + f" - Warmup | vort_hat ell2 norm {vort_norm:.4e}"
+                    )
                     pbar.set_description(desc)
                     pbar.update(100)
 
@@ -167,25 +177,28 @@ def main(args):
         result["random_states"] = torch.tensor(
             [random_state + idx + k for k in range(batch_size)], dtype=torch.int32
         )
-        logger.info(f"Saving batch [{i+1}/{num_batches}] to {data_filepath}")
-        save_pickle(result, data_filepath)
-        del result
+        if not args.demo:
+            save_pickle(result, data_filepath, append=True)
+            del result
 
-    pickle_to_pt(data_filepath)
-    logger.info(f"Done saving.")
-    if args.demo_plots:
+    if not args.demo:
+        pickle_to_pt(data_filepath)
+        logger.info(f"Done saving.")
+    else:
         try:
             verify_trajectories(
-                data_filepath,
+                result,
                 dt=record_every_iters * dt,
                 T_warmup=T_warmup,
                 n_samples=1,
             )
         except Exception as e:
-            logger.error(f"Error in plotting: {e}")
+            logger.error(f"Error in plotting sample trajectories: {e}")
     return 0
 
 
 if __name__ == "__main__":
-    args = get_args_ns2d("Meta parameters for generating NSE 2d with McWilliams IV")
+    args = get_args_ns2d(
+        "Parameters for generating NSE 2d with McWilliams 2d example"
+    )
     main(args)

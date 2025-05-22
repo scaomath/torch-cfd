@@ -46,7 +46,7 @@ def get_logger(filename, tqdm=True):
     return logging.getLogger()
 
 
-def get_args_ns2d(desc="Data generation in 2D"):
+def get_args_2d(desc="Data generation in 2D"):
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument(
         "--example",
@@ -84,7 +84,7 @@ def get_args_ns2d(desc="Data generation in 2D"):
     )
     parser.add_argument(
         "--scale",
-        default=1,
+        default=1.0,
         type=float,
         metavar="scale",
         help="spatial scaling of the domain (default: 1.0)",
@@ -103,6 +103,99 @@ def get_args_ns2d(desc="Data generation in 2D"):
         metavar="N",
         help="number of samples for data generation (default: 1200)",
     )
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
+        default=False,
+        help="use normalized GRF in IV to have L2 norm = 1 (default: False)",
+    )
+    parser.add_argument(
+        "--double",
+        action="store_true",
+        default=False,
+        help="use double precision torch to save data",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=2.5,
+        metavar="alpha",
+        help="smoothness of the GRF, spatial covariance (default: 2.5)",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=7.0,
+        metavar="tau",
+        help="strength of diagonal regularizer in the covariance (default: 7.0)",
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=1e-2,
+        metavar="eps",
+        help="singular coefficient in -eps*\Delta u + gamma*u= f",
+    )
+    parser.add_argument(
+        "--filepath",
+        type=str,
+        default=None,
+        metavar="file path",
+        help="path to save the data (default: None)",
+    )
+    parser.add_argument(
+        "--logpath",
+        type=str,
+        default=None,
+        metavar="log path",
+        help="path to save the logs (default: None)",
+    )
+    parser.add_argument(
+        "--filename",
+        type=str,
+        default=None,
+        metavar="file name",
+        help="file name for Navier-Stokes data (default: None)",
+    )
+    parser.add_argument(
+        "--no-cuda", action="store_true", default=False, help="disables CUDA"
+    )
+    parser.add_argument(
+        "--extra-vars",
+        action="store_true",
+        default=False,
+        help="store extra variables in the data file",
+    )
+    parser.add_argument(
+        "--force-rerun",
+        action="store_true",
+        default=False,
+        help="Force regenerate data even if it exists",
+    )
+    parser.add_argument(
+        "--no-tqdm",
+        action="store_true",
+        default=False,
+        help="Disable program bar for data generation",
+    )
+    parser.add_argument(
+        "--verify-data",
+        action="store_true",
+        default=False,
+        help="verify the generated data shape, device",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=1127825,
+        metavar="Seed",
+        help="random seed (default: 1127825)",
+    )
+
+    return parser
+
+def get_args_ns2d(desc="Data generation of Navier-Stokes in 2D"):
+    parser = get_args_2d(desc=desc)
     parser.add_argument(
         "--visc",
         type=float,
@@ -146,43 +239,10 @@ def get_args_ns2d(desc="Data generation in 2D"):
         help="number of recorded snapshots (default: 50)",
     )
     parser.add_argument(
-        "--normalize",
-        action="store_true",
-        default=False,
-        help="use normalized GRF in IV to have L2 norm = 1 (default: False)",
-    )
-    parser.add_argument(
-        "--double",
-        action="store_true",
-        default=False,
-        help="use double precision torch to save data",
-    )
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=2.5,
-        metavar="alpha",
-        help="smoothness of the GRF, spatial covariance (default: 2.5)",
-    )
-    parser.add_argument(
-        "--tau",
-        type=float,
-        default=7.0,
-        metavar="tau",
-        help="strength of diagonal regularizer in the covariance (default: 7.0)",
-    )
-    parser.add_argument(
-        "--epsilon",
-        type=float,
-        default=1e-2,
-        metavar="eps",
-        help="singular coefficient in -eps*\Delta u + gamma*u= f",
-    )
-    parser.add_argument(
         "--gamma",
         type=float,
         default=0.0,
-        metavar="eps",
+        metavar="gamma",
         help="L2 coefficient in elliptic problem or NSE (drag) (default: 0.0)",
     )
     parser.add_argument(
@@ -208,42 +268,6 @@ def get_args_ns2d(desc="Data generation in 2D"):
         help="the maximum speed in the init velocity field (default: 5)",
     )
     parser.add_argument(
-        "--filepath",
-        type=str,
-        default=None,
-        metavar="file path",
-        help="path to save the data (default: None)",
-    )
-    parser.add_argument(
-        "--logpath",
-        type=str,
-        default=None,
-        metavar="log path",
-        help="path to save the logs (default: None)",
-    )
-    parser.add_argument(
-        "--filename",
-        type=str,
-        default=None,
-        metavar="file name",
-        help="file name for Navier-Stokes data (default: None)",
-    )
-    parser.add_argument(
-        "--no-cuda", action="store_true", default=False, help="disables CUDA"
-    )
-    parser.add_argument(
-        "--extra-vars",
-        action="store_true",
-        default=False,
-        help="store extra variables in the data file",
-    )
-    parser.add_argument(
-        "--force-rerun",
-        action="store_true",
-        default=False,
-        help="Force regenerate data even if it exists",
-    )
-    parser.add_argument(
         "--replicable-init",
         action="store_true",
         default=False,
@@ -256,29 +280,10 @@ def get_args_ns2d(desc="Data generation in 2D"):
         help="Disable the dealias masking to the nonlinear convection term",
     )
     parser.add_argument(
-        "--no-tqdm",
+        "--demo",
         action="store_true",
         default=False,
-        help="Disable program bar for data generation",
-    )
-    parser.add_argument(
-        "--demo-plots",
-        action="store_true",
-        default=False,
-        help="plot several trajectories for the generated data",
-    )
-    parser.add_argument(
-        "--verify-data",
-        action="store_true",
-        default=False,
-        help="verify the generated data shape, device",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=1127825,
-        metavar="Seed",
-        help="random seed (default: 1127825)",
+        help="Only demo and plot several trajectories for the generated data (not save to disk)",
     )
 
     return parser
@@ -345,13 +350,14 @@ def matlab_to_pt(data_path, save_path=None):
 
 
 def verify_trajectories(
-    data_path,
+    data: dict,
     n_samples=5,
     dt=1e-3,
     T_warmup=4.5,
     diam=2 * torch.pi,
 ):
-    data = torch.load(data_path)
+    import matplotlib
+    matplotlib.use('TkAgg')
     for k, v in data.items():
         if isinstance(v, torch.Tensor):
             print(k, v.shape, v.dtype)

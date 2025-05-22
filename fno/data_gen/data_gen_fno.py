@@ -7,21 +7,21 @@
 
 # THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-import argparse
-import math
 import os
-from functools import partial
 
 import torch
 import torch.fft as fft
 import torch.nn.functional as F
 
+from torch_cfd.grids import Grid
+from torch_cfd.equations import *
+from torch_cfd.forcings import SinCosForcing
+
 from grf import GRF2d
 from solvers import get_trajectory_imex
 from data_utils import *
-from torch_cfd.grids import *
-from torch_cfd.equations import *
-from torch_cfd.forcings import *
+import logging
+
 from fno.pipeline import DATA_PATH, LOG_PATH
 
 
@@ -47,7 +47,7 @@ def main(args):
     >>> python data_gen_fno.py --num-samples 2 --batch-size 1 --grid-size 512 --subsample 1 --double --extra-vars --time 50 --time-warmup 30 --num-steps 200 --dt 5e-4 --scale 0.1 --replicable-init --seed 42
 
     - Testing if the code works
-    >>> python data_gen/data_gen_fno.py --num-samples 4 --batch-size 2 --grid-size 128 --subsample 1 --double --extra-vars --time 2 --time-warmup 1 --num-steps 10 --dt 1e-3 --scale 0.1 --replicable-init --seed 42
+    >>> python data_gen/data_gen_fno.py --num-samples 4 --batch-size 2 --grid-size 128 --subsample 1 --double --extra-vars --time 2 --time-warmup 1 --num-steps 10 --dt 1e-3 --scale 0.1 --replicable-init --seed 42 --demo
 
     """
 
@@ -168,12 +168,16 @@ def main(args):
         device=device,
         dtype=torch.float64,
     )
-    step_fn = IMEXStepper(order=2)
+
+    step_fn = IMEXStepper(order=2, requires_grad=False)
+
     ns2d = NavierStokes2DSpectral(
         viscosity=visc,
         grid=grid,
         smooth=True,
         forcing_fn=forcing_fn,
+        solver=step_fn,
+        order=2,
     ).to(device)
 
     if os.path.exists(data_filepath) and not force_rerun:
@@ -248,24 +252,24 @@ def main(args):
         result["random_states"] = torch.as_tensor(seeds, dtype=torch.int32)
 
         logger.info(f"Saving batch [{i+1}/{num_batches}] to {data_filepath}")
-        save_pickle(result, data_filepath)
-        del result
+        if not args.demo:
+            save_pickle(result, data_filepath, append=True)
+            del result
 
-    pickle_to_pt(data_filepath)
-    logger.info(f"Done converting to pt.")
-    if args.demo_plots:
+    if not args.demo:
+        pickle_to_pt(data_filepath)
+        logger.info(f"Done saving.")
+    else:
         try:
             verify_trajectories(
-                data_filepath,
-                dt=T_new / record_steps,
+                result,
+                dt=record_every_iters * dt,
                 T_warmup=T_warmup,
                 n_samples=1,
             )
         except Exception as e:
-            logger.error(f"Error in plotting: {e}")
-        finally:
-            pass
-    return
+            logger.error(f"Error in plotting sample trajectories: {e}")
+    return 0
 
 
 if __name__ == "__main__":

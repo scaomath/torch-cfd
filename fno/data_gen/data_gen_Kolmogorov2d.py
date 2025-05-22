@@ -11,16 +11,15 @@ import os
 
 import torch
 import torch.fft as fft
+from torch_cfd.finite_differences import curl_2d
+from torch_cfd.forcings import KolmogorovForcing
 
-from torch_cfd.grids import *
+from torch_cfd.grids import Grid
+from torch_cfd.initial_conditions import filtered_velocity_field
 from torch_cfd.equations import *
-from torch_cfd.initial_conditions import *
-from torch_cfd.finite_differences import *
-from torch_cfd.forcings import *
+from data_gen.solvers import get_trajectory_imex
 
 from data_utils import *
-
-from solvers import get_trajectory_imex
 
 from fno.pipeline import DATA_PATH, LOG_PATH
 
@@ -38,6 +37,9 @@ def main(args):
 
     Testing dataset for plotting the enstrohpy spectrum:
     >>> python data_gen_Kolmogorov2d.py --num-samples 16 --batch-size 8 --grid-size 256 --subsample 1 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double
+
+    Testing if the data generation works:
+    >>> python data_gen_Kolmogorov2d.py --num-samples 4 --batch-size 2 --grid-size 256 --subsample 1 --visc 1e-3 --dt 1e-3 --time 10 --time-warmup 4.5 --num-steps 100 --diam "2*torch.pi" --double --demo
     """
     args = args.parse_args()
 
@@ -47,29 +49,29 @@ def main(args):
     log_filename = os.path.join(LOG_PATH, f"{current_time}_{log_name}.log")
     logger = get_logger(log_filename)
 
-    logger.info(f"Using the following arguments: ")
-    all_args = {k: v for k, v in vars(args).items() if not callable(v)}
-    logger.info(" | ".join(f"{k}={v}" for k, v in all_args.items()))
-
     total_samples = args.num_samples
     batch_size = args.batch_size  # 128
+    assert batch_size <= total_samples, "batch_size <= num_samples"
+    assert total_samples % batch_size == 0, "total_samples divisible by batch_size"
     n = args.grid_size  # 256
-    scale = args.scale
-    viscosity = args.visc
+    viscosity = args.visc if args.Re is None else 1 / args.Re
+    Re = 1 / viscosity
     dt = args.dt  # 1e-3
     T = args.time  # 10
-    T_warmup = args.time_warmup  # 4.5
-    num_snapshots = args.num_steps  # 100
     subsample = args.subsample  # 4
     ns = n // subsample
+    scale = args.scale  # 1
+    T_warmup = args.time_warmup  # 4.5
+    num_snapshots = args.num_steps  # 100
     random_state = args.seed
     peak_wavenumber = args.peak_wavenumber  # 4
-    diam = args.diam  # "2 * torch.pi" default
-    diam = eval(diam) if isinstance(diam, str) else diam  #
+    diam = (
+        eval(args.diam) if isinstance(args.diam, str) else args.diam
+    )  # "2 * torch.pi"
     force_rerun = args.force_rerun
 
     logger = logging.getLogger()
-    logger.info(f"Generating data for Kolmogorov 2d flow with {total_samples} samples")
+    logger.info(f"Generating data for Kolmogorov2d flow with {total_samples} samples")
 
     max_velocity = args.max_velocity  # 5
     dt = stable_time_step(diam / n, dt, max_velocity, viscosity=viscosity)
@@ -80,30 +82,21 @@ def main(args):
     record_every_iters = int(total_steps / num_snapshots)
 
     dtype = torch.float64 if args.double else torch.float32
+    cdtype = torch.complex128 if args.double else torch.complex64
     dtype_str = "_fp64" if args.double else ""
     filename = args.filename
     if filename is None:
-        filename = f"Kolmogorov2d{dtype_str}_{ns}x{ns}_N{total_samples}_v{viscosity:.0e}_T{num_snapshots}.pt".replace(
-            "e-0", "e-"
-        )
+        filename = f"Kolmogorov2d{dtype_str}_{ns}x{ns}_N{total_samples}_Re{int(Re)}_T{num_snapshots}.pt"
         args.filename = filename
     data_filepath = os.path.join(DATA_PATH, filename)
-    data_exist = os.path.exists(data_filepath)
-    if data_exist and not force_rerun:
-        logger.info(f"File {filename} exists with current data as follows:")
-        data = torch.load(data_filepath)
-
-        for key, v in data.items():
-            if isinstance(v, torch.Tensor):
-                logger.info(f"{key:<12} | {v.shape} | {v.dtype}")
-            else:
-                logger.info(f"{key:<12} | {v.dtype}")
-        if len(data[key]) == total_samples:
-            return
-        elif len(data[key]) < total_samples:
-            total_samples -= len(data[key])
+    if os.path.exists(data_filepath) and not force_rerun:
+        logger.info(f"Data already exists at {data_filepath}")
+        return
+    elif os.path.exists(data_filepath) and force_rerun:
+        logger.info(f"Force rerun and save data to {data_filepath}")
+        os.remove(data_filepath)
     else:
-        logger.info(f"Generating data and saving in {filename}")
+        logger.info(f"Save data to {data_filepath}")
 
     cuda = not args.no_cuda and torch.cuda.is_available()
     no_tqdm = args.no_tqdm
@@ -111,7 +104,7 @@ def main(args):
 
     torch.set_default_dtype(torch.float64)
     logger.info(
-        f"Using device: {device} | save dtype: {dtype} | computge dtype: {torch.get_default_dtype()}"
+        f"Using device: {device} | save dtype: {dtype} | compute dtype: {torch.get_default_dtype()}"
     )
 
     grid = Grid(shape=(n, n), domain=((0, diam), (0, diam)), device=device)
@@ -119,7 +112,7 @@ def main(args):
     forcing_fn = KolmogorovForcing(
         grid=grid,
         scale=scale,
-        k=peak_wavenumber,
+        wave_number=peak_wavenumber,
         swap_xy=False,
     )
 
@@ -158,14 +151,11 @@ def main(args):
             for j in range(warmup_steps):
                 vort_hat, _ = ns2d.step(vort_hat, dt)
                 if j % 100 == 0:
-                    vort_norm = torch.linalg.norm(fft.irfft2(vort_hat)).item() / n
-                    desc = (
-                        datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-                        + f" - Warmup | vort_hat ell2 norm {vort_norm:.4e}"
-                    )
+                    vort_norm = torch.linalg.norm(fft.irfft2(vort_hat)).item()/n
+                    desc = datetime.now().strftime("%d-%b-%Y %H:%M:%S") + f" - Warmup | vort_hat ell2 norm {vort_norm:.4e}"
                     pbar.set_description(desc)
                     pbar.update(100)
-        logger.info(f"generate data from {T_warmup} to {T}")
+
         result = get_trajectory_imex(
             ns2d,
             vort_hat,
@@ -173,30 +163,35 @@ def main(args):
             num_steps=total_steps,
             record_every_steps=record_every_iters,
             pbar=not no_tqdm,
+            dtype=cdtype,
         )
 
         for field, value in result.items():
+            logger.info(
+                f"freq variable:  {field:<12} | shape: {value.shape} | dtype: {value.dtype}"
+            )
             value = fft.irfft2(value).real.cpu().to(dtype)
             logger.info(
-                f"variable: {field} | shape: {value.shape} | dtype: {value.dtype}"
+                f"saved variable: {field:<12} | shape: {value.shape} | dtype: {value.dtype}"
             )
             if subsample > 1:
-                assert (
-                    value.ndim == 4
-                ), f"Subsampling only works for (b, c, h, w) tensors, current shape: {value.shape}"
-                value = F.interpolate(value, size=(ns, ns), mode="bilinear")
-            result[field] = value
+                result[field] = F.interpolate(value, size=(ns, ns), mode="bilinear")
+            else:
+                result[field] = value
 
         result["random_states"] = torch.tensor(
             [random_state + idx + k for k in range(batch_size)], dtype=torch.int32
         )
         logger.info(f"Saving batch [{i+1}/{num_batches}] to {data_filepath}")
-        save_pickle(result, data_filepath)
-        del result
-
-    pickle_to_pt(data_filepath)
-    logger.info(f"Done saving.")
-    if args.demo_plots:
+        if not args.demo:
+            save_pickle(result, data_filepath, append=True)
+            del result
+    
+    
+    if not args.demo:
+        pickle_to_pt(data_filepath)
+        logger.info(f"Done saving.")
+    else:
         try:
             verify_trajectories(
                 data_filepath,
@@ -205,7 +200,8 @@ def main(args):
                 n_samples=1,
             )
         except Exception as e:
-            logger.error(f"Error in plotting: {e}")
+            logger.error(f"Error in plotting sample trajectories: {e}")
+    return 0
 
 
 if __name__ == "__main__":
