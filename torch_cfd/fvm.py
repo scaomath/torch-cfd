@@ -45,14 +45,14 @@ class ProjectionExplicitODE(nn.Module):
     u <- pressure_projection(u)
     """
 
-    def explicit_terms(self, *, u):
+    def explicit_terms(self, *args, **kwargs) -> GridVariableVector:
         """
         Explicit forcing term as du/dt.
-        * allows extra arguments to be passed.
         """
         raise NotImplementedError
 
-    def pressure_projection(self, *, u):
+    def pressure_projection(self, *args, **kwargs) -> Tuple[GridVariableVector, GridVariable]:
+        """Pressure projection step."""
         raise NotImplementedError
 
     def forward(self, u: GridVariableVector, dt: float) -> GridVariableVector:
