@@ -236,7 +236,7 @@ class GridVariableBoundaryTest(test_utils.TestCase):
     )
     def test_interior_consistency_periodic(self, shape, offset):
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, shape)
+        data = torch.randint(0, 10, shape).to(torch.float64)
         bc = boundaries.periodic_boundary_conditions(ndim=len(shape))
         u = grids.GridVariable(data, offset, grid, bc)
         u_interior = u.trim_boundary()
@@ -262,7 +262,7 @@ class GridVariableBoundaryTest(test_utils.TestCase):
     )
     def test_interior_consistency_no_edge_offsets(self, bc, shape):
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, shape)
+        data = torch.randint(0, 10, shape).to(torch.float64)
         u = grids.GridVariable(data, (0.5,) * len(shape), grid, bc)
         u_interior = u.trim_boundary()
         self.assertArrayEqual(u_interior.data, u.data)
@@ -281,7 +281,7 @@ class GridVariableBoundaryTest(test_utils.TestCase):
     )
     def test_interior_consistency_neumann(self, shape, bc, offset):
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, shape)
+        data = torch.randint(0, 10, shape).to(torch.float64)
         u = grids.GridVariable(data, offset, grid, bc)
         u_interior = u.trim_boundary()
         self.assertArrayEqual(u_interior.data, u.data)
@@ -302,7 +302,7 @@ class GridVariableBoundaryTest(test_utils.TestCase):
     )
     def test_interior_consistency_edge_offsets_dirichlet(self, shape, bc, offset):
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, shape)
+        data = torch.randint(0, 10, shape).to(torch.float64)
         u = grids.GridVariable(data, offset, grid, bc)
         u_interior = u.trim_boundary()
         self.assertEqual(u_interior.offset, tuple(offset + 1 for offset in u.offset))
@@ -316,7 +316,7 @@ class GridVariableBoundaryTest(test_utils.TestCase):
                 [21, 22, 23, 24, 25],
                 [31, 32, 33, 34, 35],
                 [41, 42, 43, 44, 45],
-            ]
+            ], dtype=torch.float64
         )
 
         grid = grids.Grid(shape=(4, 5), domain=((0, 1), (0, 1)))
@@ -327,7 +327,8 @@ class GridVariableBoundaryTest(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             answer = torch.tensor(
-                [[11, 12, 13, 14, 15], [21, 22, 23, 24, 25], [31, 32, 33, 34, 35]]
+                [[11, 12, 13, 14, 15], [21, 22, 23, 24, 25], [31, 32, 33, 34, 35]],
+                dtype=torch.float64
             )
             self.assertArrayEqual(u_interior.data, answer)
             self.assertEqual(u_interior.offset, offset)
@@ -338,7 +339,8 @@ class GridVariableBoundaryTest(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             answer = torch.tensor(
-                [[11, 12, 13, 14], [21, 22, 23, 24], [31, 32, 33, 34]]
+                [[11, 12, 13, 14], [21, 22, 23, 24], [31, 32, 33, 34]],
+                dtype=torch.float64
             )
             self.assertArrayEqual(u_interior.data, answer)
             self.assertEqual(u_interior.grid, grid)
@@ -348,7 +350,8 @@ class GridVariableBoundaryTest(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             answer = torch.tensor(
-                [[21, 22, 23, 24, 25], [31, 32, 33, 34, 35], [41, 42, 43, 44, 45]]
+                [[21, 22, 23, 24, 25], [31, 32, 33, 34, 35], [41, 42, 43, 44, 45]],
+                dtype=torch.float64
             )
             self.assertArrayEqual(u_interior.data, answer)
             self.assertEqual(u_interior.grid, grid)
@@ -358,7 +361,8 @@ class GridVariableBoundaryTest(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             answer = torch.tensor(
-                [[22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]]
+                [[22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]],
+                dtype=torch.float64
             )
             self.assertArrayEqual(u_interior.data, answer)
             self.assertEqual(u_interior.grid, grid)
@@ -368,7 +372,8 @@ class GridVariableBoundaryTest(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             answer = torch.tensor(
-                [[12, 13, 14, 15], [22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]]
+                [[12, 13, 14, 15], [22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]],
+                dtype=torch.float64
             )
             self.assertArrayEqual(u_interior.data, answer)
             self.assertEqual(u_interior.grid, grid)
@@ -397,7 +402,7 @@ class GridVariableBoundaryTest(test_utils.TestCase):
     )
     def test_shift_pad_trim(self, shape, bc, padding, dim):
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, shape)
+        data = torch.randint(0, 10, shape).to(torch.float64)
         u = grids.GridVariable(data, (0.5,) * len(shape), grid, bc)
 
         with self.subTest("shift"):
@@ -464,7 +469,7 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
         """Test that periodic boundary conditions work with batch dimensions."""
         grid = grids.Grid(shape)
         # Create batched data: (batch_size, *shape)
-        data = torch.randint(0, 10, (batch_size, *shape))
+        data = torch.randint(0, 10, (batch_size, *shape)).to(torch.float64)
         bc = boundaries.periodic_boundary_conditions(ndim=len(shape))
         u = grids.GridVariable(data, offset, grid, bc)
         u_interior = u.trim_boundary()
@@ -493,7 +498,7 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
     def test_interior_consistency_no_edge_offsets_batch(self, batch_size, bc, shape):
         """Test boundary behavior with non-edge offsets and batch dimensions."""
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, (batch_size, *shape))
+        data = torch.randint(0, 10, (batch_size, *shape)).to(torch.float64)
         u = grids.GridVariable(data, (0.5,) * len(shape), grid, bc)
         u_interior = u.trim_boundary()
 
@@ -518,7 +523,7 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
     def test_interior_consistency_neumann_batch(self, batch_size, shape, bc, offset):
         """Test Neumann boundary conditions with batch dimensions."""
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, (batch_size, *shape))
+        data = torch.randint(0, 10, (batch_size, *shape)).to(torch.float64)
         u = grids.GridVariable(data, offset, grid, bc)
         u_interior = u.trim_boundary()
 
@@ -544,7 +549,7 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
     ):
         """Test Dirichlet boundary conditions with edge offsets and batch dimensions."""
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, (batch_size, *shape))
+        data = torch.randint(0, 10, (batch_size, *shape)).to(torch.float64)
         u = grids.GridVariable(data, offset, grid, bc)
         u_interior = u.trim_boundary()
 
@@ -567,7 +572,8 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
                 [21, 22, 23, 24, 25],
                 [31, 32, 33, 34, 35],
                 [41, 42, 43, 44, 45],
-            ]
+            ],
+            dtype=torch.float64
         )
         data = single_data.unsqueeze(0).repeat(batch_size, 1, 1)
 
@@ -579,7 +585,8 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             expected_single = torch.tensor(
-                [[11, 12, 13, 14, 15], [21, 22, 23, 24, 25], [31, 32, 33, 34, 35]]
+                [[11, 12, 13, 14, 15], [21, 22, 23, 24, 25], [31, 32, 33, 34, 35]],
+                dtype=torch.float64
             )
             expected_batch = expected_single.unsqueeze(0).repeat(batch_size, 1, 1)
             self.assertArrayEqual(u_interior.data, expected_batch)
@@ -591,7 +598,8 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             expected_single = torch.tensor(
-                [[11, 12, 13, 14], [21, 22, 23, 24], [31, 32, 33, 34]]
+                [[11, 12, 13, 14], [21, 22, 23, 24], [31, 32, 33, 34]],
+                dtype=torch.float64
             )
             expected_batch = expected_single.unsqueeze(0).repeat(batch_size, 1, 1)
             self.assertArrayEqual(u_interior.data, expected_batch)
@@ -602,7 +610,8 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             expected_single = torch.tensor(
-                [[21, 22, 23, 24, 25], [31, 32, 33, 34, 35], [41, 42, 43, 44, 45]]
+                [[21, 22, 23, 24, 25], [31, 32, 33, 34, 35], [41, 42, 43, 44, 45]],
+                dtype=torch.float64
             )
             expected_batch = expected_single.unsqueeze(0).repeat(batch_size, 1, 1)
             self.assertArrayEqual(u_interior.data, expected_batch)
@@ -613,7 +622,8 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             expected_single = torch.tensor(
-                [[22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]]
+                [[22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]],
+                dtype=torch.float64
             )
             expected_batch = expected_single.unsqueeze(0).repeat(batch_size, 1, 1)
             self.assertArrayEqual(u_interior.data, expected_batch)
@@ -624,7 +634,8 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
             u = grids.GridVariable(data, offset, grid, bc)
             u_interior = u.trim_boundary()
             expected_single = torch.tensor(
-                [[12, 13, 14, 15], [22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]]
+                [[12, 13, 14, 15], [22, 23, 24, 25], [32, 33, 34, 35], [42, 43, 44, 45]],
+                dtype=torch.float64
             )
             expected_batch = expected_single.unsqueeze(0).repeat(batch_size, 1, 1)
             self.assertArrayEqual(u_interior.data, expected_batch)
@@ -657,7 +668,7 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
     def test_shift_pad_trim_batch(self, batch_size, shape, bc, padding, dim):
         """Test shift, pad, and trim operations with batch dimensions."""
         grid = grids.Grid(shape)
-        data = torch.randint(0, 10, (batch_size, *shape))
+        data = torch.randint(0, 10, (batch_size, *shape)).to(torch.float64)
         u = grids.GridVariable(data, (0.5,) * len(shape), grid, bc)
 
         with self.subTest("shift"):
@@ -674,7 +685,7 @@ class GridVariableBoundaryTestBatch(test_utils.TestCase):
         grid = grids.Grid(shape)
 
         # Create test data where each batch element is identical
-        single_data = torch.randint(0, 100, shape)
+        single_data = torch.randint(0, 100, shape).to(torch.float64)
         batched_data = single_data.unsqueeze(0).repeat(batch_size, 1, 1)
 
         bc = boundaries.dirichlet_boundary_conditions(ndim=2)

@@ -14,7 +14,24 @@ After version `0.1.0`, I began prompt with existing codes in VSCode Copilot (usi
 
 #### Major change: batch dimension for FVM
 The finite volume solver now accepts the batch dimension, some key updates include
-- Re-implemented flux computations of $(\boldsymbol{u}\cdot\nabla)\boldsymbol{u}$ as `nn.Module`. I originally implemented a tensor only version but did not quite work. Sonnet 3.7 provided a very good refactoring template after being given both the original code and my implementation.
+- Re-implemented flux computations of $(\boldsymbol{u}\cdot\nabla)\boldsymbol{u}$ as `nn.Module`. I originally implemented a tensor only version but did not quite work by pre-assigning `target_offsets`, which was buggy for the second component of the velocity. Sonnet 3.7 provided a very good refactoring template after being given both the original code and my implementation, after which I pretty much just fill in the blanks in [`advection.py`](./advection.py). Later I found out the bug was pretty stupid on my side, from
+  ```python
+  for i in range(2):
+    u = v[i]
+    for j in range(2):
+        v[i] = flux_interpolation(u, v[j]) # offset is updated here
+  ```
+  to 
+  ```python
+  # this is gonna be buggy of course because the offset alignment will go wrong
+  # the target_offsets are looped inside flux_interpolation of AdvectionVanLeer
+  for offset in target_offsets:
+    u = v[i]; u.offset = offset
+    for j in range(2):
+        v[i] = flux_interpolation(u, v[j])
+        v[i].offset = offset 
+  ```
+  The fixed version that loops in `__call__` of [`AdvectionVanLeer` class is here](./advection.py#L451).
 - Implemented a `_constant_pad_tensor` function to improve the behavior of `F.pad`, to help imposing non-homogeneous boundary conditions. It uses naturally ordered `pad` args (like Jax, unlike `F.pad`), while taking the batch dimension into consideration.
 - Changed the behavior of `u.shift` taking into consideration of batch dimension. In general these methods within the `bc` class or `GridVariable` starts from the last dimension instead of the first, e.g., `for dim in range(u.grid.ndim): ...` changes to `for dim in range(-u.grid.ndim, 0): ...`.
 

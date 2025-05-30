@@ -17,7 +17,6 @@
 
 """Shared test utilities."""
 
-import numpy as np
 import torch
 from absl.testing import parameterized
 
@@ -26,7 +25,6 @@ from torch_cfd import grids
 # Enable CUDA deterministic mode if needed
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-
 
 class TestCase(parameterized.TestCase):
     """TestCase with assertions for grids.GridVariable."""
@@ -44,6 +42,7 @@ class TestCase(parameterized.TestCase):
         Returns:
           The data-only arrays, with other attributes removed.
         """
+        # GridVariable
         is_gridvariable = [isinstance(array, grids.GridVariable) for array in arrays]
         if any(is_gridvariable):
             self.assertTrue(
@@ -60,10 +59,15 @@ class TestCase(parameterized.TestCase):
             arrays = tuple(array.data for array in arrays)
         return arrays
 
-    def assertArrayEqual(self, expected, actual, **kwargs):
-        expected, actual = self._check_and_remove_alignment_and_grid(expected, actual)
-        torch.testing.assert_close(expected, actual, **kwargs)
+    # pylint: disable=unbalanced-tuple-unpacking
+    def assertArrayEqual(self, actual, expected, **kwargs):
+        actual, expected = self._check_and_remove_alignment_and_grid(actual, expected)
+        atol = torch.finfo(expected.data.dtype).eps
+        rtol = expected.abs().max() * atol
+        torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol, **kwargs)
 
-    def assertAllClose(self, expected, actual, **kwargs):
-        expected, actual = self._check_and_remove_alignment_and_grid(expected, actual)
-        torch.testing.assert_close(expected, actual, **kwargs)
+    def assertAllClose(self, actual, expected, **kwargs):
+        actual, expected = self._check_and_remove_alignment_and_grid(actual, expected)
+        torch.testing.assert_close(actual, expected, **kwargs)
+
+    # pylint: enable=unbalanced-tuple-unpacking

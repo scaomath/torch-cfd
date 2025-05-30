@@ -856,7 +856,7 @@ class GridTensor(torch.Tensor):
         return super().clone(*args, **kwargs)
 
 
-def shift(u: GridVariable, offset: int, dim: int) -> GridVariable:
+def shift(u: GridVariable, offset: int, dim: int, bc: Optional[BoundaryConditions] = None) -> GridVariable:
     """Shift a GridVariable by `offset`.
 
     Args:
@@ -869,12 +869,12 @@ def shift(u: GridVariable, offset: int, dim: int) -> GridVariable:
         `u.offset + offset`.
     """
     dim = -u.grid.ndim + dim if dim >= 0 else dim
-    padded = pad(u, offset, dim)
+    padded = pad(u, offset, dim, bc)
     trimmed = trim(padded, -offset, dim)
     return trimmed
 
 
-def pad(u: GridVariable, width: int, dim: int) -> GridVariable:
+def pad(u: GridVariable, width: int, dim: int, bc: Optional[BoundaryConditions] = None) -> GridVariable:
     """Pad a GridVariable by `padding`.
 
     Important: the original _pad in jax_cfd makes no sense past 1 ghost cell for nonperiodic boundaries.
@@ -892,11 +892,14 @@ def pad(u: GridVariable, width: int, dim: int) -> GridVariable:
     Note:
         the padding removes the boundary conditions, so u.bc is set to None.
     """
+    assert not (u.bc is None and bc is None), "Both u.bc and bc cannot be None"
+    bc = bc if bc is not None else u.bc
+    
     if width < 0:  # pad lower boundary
-        bc_type = u.bc.types[dim][0]
+        bc_type = bc.types[dim][0]
         padding = (-width, 0)
     else:  # pad upper boundary
-        bc_type = u.bc.types[dim][1]
+        bc_type = bc.types[dim][1]
         padding = (0, width)
 
     full_padding = [(0, 0)] * u.grid.ndim
@@ -913,20 +916,20 @@ def pad(u: GridVariable, width: int, dim: int) -> GridVariable:
     if bc_type == BCType.PERIODIC:
         # self.values are ignored here
         data = expand_dims_pad(u.data, full_padding, mode="circular")
-        return GridVariable(data, tuple(new_offset), u.grid)
+        return GridVariable(data, tuple(new_offset), u.grid, bc)
     elif bc_type == BCType.DIRICHLET:
         if math.isclose(u.offset[dim] % 1, 0.5):  # cell center
             # make the linearly interpolated value equal to the boundary by setting
             # the padded values to the negative symmetric values
             data = 2 * expand_dims_pad(
-                u.data, full_padding, mode="constant", constant_values=u.bc._values
-            ) - expand_dims_pad(u.data, full_padding, mode="reflect")
-            return GridVariable(data, tuple(new_offset), u.grid)
+                u.data, full_padding, mode="constant", constant_values=bc._values
+            ) - expand_dims_pad(u.data, full_padding, mode="replicate")
+            return GridVariable(data, tuple(new_offset), u.grid, bc)
         elif math.isclose(u.offset[dim] % 1, 0):  # cell edge
             data = expand_dims_pad(
-                u.data, full_padding, mode="constant", constant_values=u.bc._values
+                u.data, full_padding, mode="constant", constant_values=bc._values
             )
-            return GridVariable(data, tuple(new_offset), u.grid)
+            return GridVariable(data, tuple(new_offset), u.grid, bc)
         else:
             raise ValueError(
                 "expected the new offset to be an edge or cell center, got "
@@ -943,19 +946,19 @@ def pad(u: GridVariable, width: int, dim: int) -> GridVariable:
         else:
             # When the data is cell-centered, computes the backward difference.
             # When the data is on cell edges, boundary is set such that
-            # (u_last_interior - u_boundary)/grid_step = neumann_bc_value.
+            # (u_boundary - u_last_interior)/grid_step = neumann_bc_value (fixed from Jax-cfd).
+            # note: Jax-cfd implementation was wrong, Neumann BC is \nabla u \cdot exterior normal, the order is reversed
             data = expand_dims_pad(
                 u.data, full_padding, mode="replicate"
             ) + u.grid.step[dim] * (
-                expand_dims_pad(u.data, full_padding, mode="constant")
-                - expand_dims_pad(
+                expand_dims_pad(
                     u.data,
                     full_padding,
                     mode="constant",
-                    constant_values=u.bc._values,
-                )
+                    constant_values=bc._values,
+                ) - expand_dims_pad(u.data, full_padding, mode="constant")
             )
-            return GridVariable(data, tuple(new_offset), u.grid)
+            return GridVariable(data, tuple(new_offset), u.grid, bc)
 
     else:
         raise ValueError("invalid boundary type")

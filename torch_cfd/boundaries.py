@@ -34,8 +34,8 @@ BCType = grids.BCType()
 
 
 class Padding:
-    MIRROR = "mirror"
-    EXTEND = "extend"
+    MIRROR = "reflect"
+    EXTEND = "replicate"
 
 
 @dataclasses.dataclass(init=False, frozen=True)
@@ -71,30 +71,17 @@ class ConstantBoundaryConditions(grids.BoundaryConditions):
     def shift(
         self,
         u: GridVariable,
-        offset: float,
+        offset: int,
         dim: int,
     ) -> GridVariable:
         """
         A fallback function to make the implementation back-compatible
         see grids.shift
+        bc.shift(u, offset, dim) overrides u.bc
+        grids.shift(u, offset, dim) keeps u.bc
         """
-        return grids.shift(u, offset, dim)
+        return grids.shift(u, offset, dim, self)
 
-    def _count_bc_components(self) -> int:
-        """Counts the number of components in the boundary conditions.
-
-        Returns:
-          The number of components in the boundary conditions.
-        """
-        count = 0
-        ndim = len(self.types)
-        for axis in range(ndim):  # ndim
-            if len(self.types[axis]) != 2:
-                raise ValueError(
-                    f"Boundary conditions for axis {axis} must have two values got {len(self.types[axis])}."
-                )
-            count += len(self.types[axis])
-        return count
 
     def _is_aligned(self, u: GridVariable, dim: int) -> bool:
         """Checks if array u contains all interior domain information.
@@ -240,15 +227,15 @@ class ConstantBoundaryConditions(grids.BoundaryConditions):
         """
         if offset_to_pad_to is None:
             offset_to_pad_to = u.offset
-            for axis in range(u.grid.ndim):
-                _ = self._is_aligned(u, axis)
-                if self.types[axis][0] == BCType.DIRICHLET and math.isclose(
-                    u.offset[axis], 1.0
-                ):
-                    if math.isclose(offset_to_pad_to[axis], 1.0):
-                        u = grids.pad(u, 1, axis, mode=mode)
-                    elif math.isclose(offset_to_pad_to[axis], 0.0):
-                        u = grids.pad(u, -1, axis, mode=mode)
+        for axis in range(-u.grid.ndim, 0):
+            _ = self._is_aligned(u, axis)
+            if self.types[axis][0] == BCType.DIRICHLET and math.isclose(
+                u.offset[axis], 1.0
+            ):
+                if math.isclose(offset_to_pad_to[axis], 1.0):
+                    u = grids.pad(u, 1, axis, self)
+                elif math.isclose(offset_to_pad_to[axis], 0.0):
+                    u = grids.pad(u, -1, axis, self)
         return GridVariable(u.data, u.offset, u.grid, self)
 
     def impose_bc(self, u: GridVariable) -> GridVariable:
@@ -265,7 +252,8 @@ class ConstantBoundaryConditions(grids.BoundaryConditions):
         """
         offset = u.offset
         u = self.trim_boundary(u)
-        return self.pad_and_impose_bc(u, offset)
+        u = self.pad_and_impose_bc(u, offset)
+        return u
 
 
 class HomogeneousBoundaryConditions(ConstantBoundaryConditions):
@@ -383,6 +371,22 @@ def periodic_and_neumann_boundary_conditions(
         )
 
 
+def _count_bc_components(bc: BoundaryConditions) -> int:
+    """Counts the number of components in the boundary conditions.
+
+    Returns:
+        The number of components in the boundary conditions.
+    """
+    count = 0
+    ndim = len(bc.types)
+    for axis in range(ndim):  # ndim
+        if len(bc.types[axis]) != 2:
+            raise ValueError(
+                f"Boundary conditions for axis {axis} must have two values got {len(bc.types[axis])}."
+            )
+        count += len(bc.types[axis])
+    return count
+
 def consistent_boundary_conditions_grid(
     grid, *arrays: GridVariable
 ) -> Tuple[GridVariable, ...]:
@@ -391,7 +395,7 @@ def consistent_boundary_conditions_grid(
     """
     bc_counts = []
     for array in arrays:
-        bc_counts.append(array.bc._count_bc_components())
+        bc_counts.append(_count_bc_components(array.bc))
     bc_count = bc_counts[0]
     if any(bc_counts[i] != bc_count for i in range(1, len(bc_counts))):
         raise Exception("Boundary condition counts are inconsistent")
