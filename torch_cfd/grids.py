@@ -207,8 +207,10 @@ class Grid:
         return tuple(xi[..., : k_max + 1] for xi in fmesh)
 
     def eval_on_mesh(
-        self, fn: Callable[..., torch.Tensor], offset: Optional[Sequence[float]] = None
-    ) -> torch.Tensor:
+        self,
+        fn: Callable[..., torch.Tensor],
+        offset: Optional[Tuple[float, ...]] = None,
+    ) -> GridVariable:
         """Evaluates the function on the grid mesh with the specified offset.
 
         Args:
@@ -221,7 +223,7 @@ class Grid:
         """
         if offset is None:
             offset = self.cell_center
-        return GridVariable(fn(*self.mesh(offset)), offset, self)  # type: ignore
+        return GridVariable(fn(*self.mesh(offset)), offset, self)
 
 
 class BCType:
@@ -472,7 +474,7 @@ class GridVariable(GridTensorOpsMixin):
      - [x] (added 0.0.8) Mixin defining all operator special methods using __torch_function__. Some integer-based operations are not implemented.
      - [x] (0.1.1) In original Google Research's Jax-CFD code, the devs opted to separate GridArray (no bc) and GridVariable (bc). After carefully studied the FVM implementation, I decided to combine GridArray with GridVariable to reduce code duplication.
      - One can definitely try to use TensorClass from tensordict to implement a more generic GridVariable class, however I found using Tensorclass or @tensorclass actually slows down the code quite a bit.
-    - [x] (0.2.0) Finished refactoring the whole GridVariable class for various routines, getting rid of the GridArray class, adding several helper functions for GridVariableVector, and adding batch dimension checks.
+     - [x] (0.2.0) Finished refactoring the whole GridVariable class for various routines, getting rid of the GridArray class, adding several helper functions for GridVariableVector, and adding batch dimension checks.
     """
 
     data: torch.Tensor
@@ -507,9 +509,7 @@ class GridVariable(GridTensorOpsMixin):
 
     @property
     def array(self) -> torch.Tensor:
-        """
-        added for compatibility
-        """
+        """added for back-compatibility"""
         return self.data
 
     @array.setter
@@ -519,6 +519,18 @@ class GridVariable(GridTensorOpsMixin):
     @property
     def device(self) -> torch.device:
         return self.data.device
+
+    def norm(self, p: Optional[Union[int, float]] = None, **kwargs) -> torch.Tensor:
+        """Returns the norm of the data."""
+        return torch.linalg.norm(self.data, ord=p, **kwargs)
+
+    @property
+    def L2norm(self) -> torch.Tensor:
+        """returns the batched norm, shaped (bsz, )"""
+        dims = range(-self.grid.ndim, 0)
+        return self.norm(dim=tuple(dims)) * (self.grid.step[0] * self.grid.step[1]) ** (
+            1 / self.grid.ndim
+        )
 
     def clone(self):
         return GridVariable(self.data.clone(), self.offset, self.grid, self.bc)
@@ -856,7 +868,9 @@ class GridTensor(torch.Tensor):
         return super().clone(*args, **kwargs)
 
 
-def shift(u: GridVariable, offset: int, dim: int, bc: Optional[BoundaryConditions] = None) -> GridVariable:
+def shift(
+    u: GridVariable, offset: int, dim: int, bc: Optional[BoundaryConditions] = None
+) -> GridVariable:
     """Shift a GridVariable by `offset`.
 
     Args:
@@ -874,7 +888,9 @@ def shift(u: GridVariable, offset: int, dim: int, bc: Optional[BoundaryCondition
     return trimmed
 
 
-def pad(u: GridVariable, width: int, dim: int, bc: Optional[BoundaryConditions] = None) -> GridVariable:
+def pad(
+    u: GridVariable, width: int, dim: int, bc: Optional[BoundaryConditions] = None
+) -> GridVariable:
     """Pad a GridVariable by `padding`.
 
     Important: the original _pad in jax_cfd makes no sense past 1 ghost cell for nonperiodic boundaries.
@@ -890,11 +906,12 @@ def pad(u: GridVariable, width: int, dim: int, bc: Optional[BoundaryConditions] 
         Padded array, elongated along the indicated axis.
 
     Note:
-        the padding removes the boundary conditions, so u.bc is set to None.
+        - the padding can be only defined when there is proper BC given. If bc is externally given (such as those cases in boundaryies.py), it will override the one in u.bc (if it is not None).
+        - In the original Jax-CFD codes, when the width > 1, the code raises error "Padding past 1 ghost cell is not defined in nonperiodic case.", this is now removed and tested for correctness.
     """
     assert not (u.bc is None and bc is None), "Both u.bc and bc cannot be None"
     bc = bc if bc is not None else u.bc
-    
+
     if width < 0:  # pad lower boundary
         bc_type = bc.types[dim][0]
         padding = (-width, 0)
@@ -907,11 +924,6 @@ def pad(u: GridVariable, width: int, dim: int, bc: Optional[BoundaryConditions] 
 
     new_offset = list(u.offset)
     new_offset[dim] -= padding[0]
-
-    if bc_type != BCType.PERIODIC and abs(width) > 1:
-        raise ValueError(
-            "Padding past 1 ghost cell is not defined in nonperiodic case."
-        )
 
     if bc_type == BCType.PERIODIC:
         # self.values are ignored here
@@ -956,7 +968,8 @@ def pad(u: GridVariable, width: int, dim: int, bc: Optional[BoundaryConditions] 
                     full_padding,
                     mode="constant",
                     constant_values=bc._values,
-                ) - expand_dims_pad(u.data, full_padding, mode="constant")
+                )
+                - expand_dims_pad(u.data, full_padding, mode="constant")
             )
             return GridVariable(data, tuple(new_offset), u.grid, bc)
 
@@ -1114,6 +1127,62 @@ def _constant_pad_tensor(
             result = torch.cat([result, right_tensor], dim=dim_pad_tensor)
 
     return result
+
+
+# def _constant_pad(
+#     inputs: torch.Tensor,
+#     pad: Tuple[Tuple[int, int], ...],
+#     constant_values: Tuple[Tuple[float, float], ...],
+#     **kwargs,
+# ) -> torch.Tensor:
+#     """
+#     Corrected padding function that supports different constant values for each side.
+#     Pads each dimension from first to last as per the user input, mapping correctly to
+#     PyTorch's last-to-first padding order.
+#     inputs was unsqueezed at dim 0 as a batch_dim, so actual data dims are shifted by +1
+#     """
+#     ndim = inputs.ndim - 1 #
+#     original_shape = list(inputs.shape)
+#     out_shape = [1] + [original_shape[i+1] + pad[i][0] + pad[i][1] for i in range(ndim)] # inputs was unsqueezed at dim 0, so actual data dims are shifted by +1
+
+#     output = torch.empty(out_shape, dtype=inputs.dtype, device=inputs.device)
+
+#     def get_vals(dim):
+#         if len(constant_values) > dim:
+#             vals = constant_values[dim]
+#             if isinstance(vals, (tuple, list)) and len(vals) == 2:
+#                 return float(vals[0]), float(vals[1])
+#             else:
+#                 val = float(vals)
+#                 return val, val
+#         return 0.0, 0.0
+
+#     # Fill with zeros initially
+#     output.fill_(0.0)
+
+#     # Main region
+#     slices = (slice(None),) + tuple(slice(pad[i][0], pad[i][0] + original_shape[i+1]) for i in range(ndim))
+#     output[slices] = inputs
+
+#     # Apply left/right pad values per dim
+#     for i in range(ndim):
+#         lpad, rpad = pad[i]
+#         lval, rval = get_vals(i)
+
+#         if lpad > 0:
+#             left_slices = [slice(None)] * ndim
+#             left_slices[i] = slice(0, lpad)
+#             left_slides = (slice(None), ) + tuple(left_slices)
+#             output[left_slides] = lval
+
+#         if rpad > 0:
+#             right_slices = [slice(None)] * ndim
+#             right_slices[i] = slice(-rpad, None)
+#             right_slices = (slice(None), ) + tuple(right_slices)
+#             output[right_slices] = rval
+
+#     return output
+
 
 def averaged_offset(*offsets: List[Tuple[float, ...]]) -> Tuple[float, ...]:
     """Returns the averaged offset of the given arrays."""

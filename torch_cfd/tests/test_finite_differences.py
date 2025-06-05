@@ -526,8 +526,8 @@ class FiniteDifferenceBatchTest(test_utils.TestCase):
             u = periodic_grid_variable(batched_data, (0, 0), grid)
             
             # Apply central difference
-            grad_x = fdm.central_difference(u, axis=0)
-            grad_y = fdm.central_difference(u, axis=1)
+            grad_x = fdm.central_difference(u, dim=0)
+            grad_y = fdm.central_difference(u, dim=1)
             
             # Each batch element should be identical
             for i in range(1, batch_size):

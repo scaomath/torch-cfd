@@ -33,8 +33,8 @@ Params = Union[nn.ParameterDict, Dict]
 
 
 def stable_time_step(
-    dx: float = None,
-    dt: float = None,
+    dx: float = 1,
+    dt: float = 1,
     max_velocity: float = 1.0,
     max_courant_number: float = 0.5,
     viscosity: float = 1e-3,
@@ -379,8 +379,7 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         drag: float = 0.0,
         smooth: bool = True,
         forcing_fn: Optional[Callable] = None,
-        solver: IMEXStepper = None,
-        **kwargs,
+        step_fn: IMEXStepper = None,
     ):
         super().__init__()
         self.viscosity = viscosity
@@ -388,17 +387,17 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         self.drag = drag
         self.smooth = smooth
         self.forcing_fn = forcing_fn
-        self.solver = solver
         self._initialize()
+        self.step_fn = step_fn
 
     def _initialize(self):
         kx, ky = self.grid.rfft_mesh()
         self.register_buffer("kx", kx)
         self.register_buffer("ky", ky)
-        laplace = -4 * (torch.pi) ** 2 * (abs(self.kx) ** 2 + abs(self.ky) ** 2)
+        laplace = -4 * (torch.pi) ** 2 * (abs(kx) ** 2 + abs(ky) ** 2)
         self.register_buffer("laplace", laplace)
         filter_ = brick_wall_filter_2d(self.grid)
-        linear_term = self.viscosity * self.laplace - self.drag
+        linear_term = self.viscosity * laplace - self.drag
         self.register_buffer("linear_term", linear_term)
         self.register_buffer("filter", filter_)
 
@@ -411,11 +410,12 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         return residual
 
     def _explicit_terms(self, vort_hat):
-        vhat, _ = vorticity_to_velocity(self.grid, vort_hat, (self.kx, self.ky))
+        kx, ky = torch.as_tensor(self.kx), torch.as_tensor(self.ky)
+        vhat, _ = vorticity_to_velocity(self.grid, vort_hat, (kx, ky))
         vx, vy = fft.irfft2(vhat[0]), fft.irfft2(vhat[1])
 
-        grad_x_hat = 2j * torch.pi * self.kx * vort_hat
-        grad_y_hat = 2j * torch.pi * self.ky * vort_hat
+        grad_x_hat = 2j * torch.pi * kx * vort_hat
+        grad_y_hat = 2j * torch.pi * ky * vort_hat
         grad_x, grad_y = fft.irfft2(grad_x_hat), fft.irfft2(grad_y_hat)
 
         advection = -(grad_x * vx + grad_y * vy)
@@ -430,11 +430,11 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
             if not self.forcing_fn.vorticity:
                 fx, fy = self.forcing_fn(self.grid, (vx, vy))
                 fx_hat, fy_hat = fft.rfft2(fx.data), fft.rfft2(fy.data)
-                terms += spectral_curl_2d((fx_hat, fy_hat), (self.kx, self.ky))
+                terms += spectral_curl_2d((fx_hat, fy_hat), (kx, ky))
             else:
                 f = self.forcing_fn(self.grid, vort_hat)
                 f_hat = fft.rfft2(f.data)
-                terms += f_hat
+                terms += f_hat.expand_as(vort_hat)
         return terms
 
     def explicit_terms(self, vort_hat):
@@ -458,6 +458,6 @@ class NavierStokes2DSpectral(ImplicitExplicitODE):
         """
         vort_old = vort_hat
         for _ in range(steps):
-            vort_hat = self.solver(vort_hat, dt, self)
+            vort_hat = self.step_fn(vort_hat, dt, self)
         dvortdt_hat = 1 / (steps * dt) * (vort_hat - vort_old)
         return vort_hat, dvortdt_hat

@@ -176,8 +176,7 @@ def main(args):
         grid=grid,
         smooth=True,
         forcing_fn=forcing_fn,
-        solver=step_fn,
-        order=2,
+        step_fn=step_fn,
     ).to(device)
 
     if os.path.exists(data_filepath) and not force_rerun:

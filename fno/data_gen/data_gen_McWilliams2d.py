@@ -119,7 +119,7 @@ def main(args):
         drag=0,
         smooth=True,
         forcing_fn=None,
-        solver=RK4CrankNicolsonStepper(),
+        step_fn=RK4CrankNicolsonStepper(),
     ).to(device)
 
     num_batches = total_samples // batch_size

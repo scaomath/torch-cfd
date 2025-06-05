@@ -82,7 +82,6 @@ class ConstantBoundaryConditions(grids.BoundaryConditions):
         """
         return grids.shift(u, offset, dim, self)
 
-
     def _is_aligned(self, u: GridVariable, dim: int) -> bool:
         """Checks if array u contains all interior domain information.
 
@@ -348,6 +347,29 @@ def neumann_boundary_conditions(
         )
 
 
+def dirichlet_and_periodic_boundary_conditions(
+    bc_vals: Optional[Tuple[float, float]] = None,
+) -> BoundaryConditions:
+    """Returns BCs Dirichlet for dimension 0 and Periodic for dimension 1.
+
+    Args:
+      bc_vals: the lower and upper boundary condition value for each dimension. If
+        None, returns Homogeneous BC.
+
+    Returns:
+      BoundaryCondition subclass.
+    """
+    if not bc_vals:
+        return HomogeneousBoundaryConditions(
+            ((BCType.DIRICHLET, BCType.DIRICHLET), (BCType.PERIODIC, BCType.PERIODIC))
+        )
+    else:
+        return ConstantBoundaryConditions(
+            ((BCType.DIRICHLET, BCType.DIRICHLET), (BCType.PERIODIC, BCType.PERIODIC)),
+            (bc_vals, (None, None)),
+        )
+
+
 def periodic_and_neumann_boundary_conditions(
     bc_vals: Optional[Tuple[float, float]] = None,
 ) -> BoundaryConditions:
@@ -386,6 +408,7 @@ def _count_bc_components(bc: BoundaryConditions) -> int:
             )
         count += len(bc.types[axis])
     return count
+
 
 def consistent_boundary_conditions_grid(
     grid, *arrays: GridVariable
@@ -443,17 +466,9 @@ def get_pressure_bc_from_velocity_bc(
     """
     # assumes that if the boundary is not periodic, pressure BC is zero flux.
     pressure_bc_types = []
+
     for velocity_bc in bcs:
-        if isinstance(velocity_bc, HomogeneousBoundaryConditions):
-            velocity_bc_types = velocity_bc.types
-        else:
-            raise NotImplementedError(
-                f"Pressure boundary condition is not implemented for velocity with {velocity_bc}"
-            )
-        if (
-            velocity_bc_types[0][0] == BCType.PERIODIC
-            and velocity_bc_types[1][0] == BCType.PERIODIC
-        ):
+        if is_bc_periodic_boundary_conditions(velocity_bc, 0):
             pressure_bc_types.append((BCType.PERIODIC, BCType.PERIODIC))
         else:
             pressure_bc_types.append((BCType.NEUMANN, BCType.NEUMANN))
@@ -497,13 +512,11 @@ def get_advection_flux_bc_from_velocity_and_scalar_bc(
     In nonperiodic case, flux boundary parallel to flux direction is
     homogeneous dirichlet.
     In nonperiodic case if flux direction is normal to the wall, the
-    function supports 2 cases:
+    function supports multiple cases:
       1) Nonporous boundary, corresponding to homogeneous flux bc.
-      2) Pourous boundary with constant flux, corresponding to
+      2) Porous boundary with constant flux, corresponding to
         both the velocity and scalar with Homogeneous Neumann bc.
-
-    This function supports only these cases because all other cases result in
-    time dependent flux boundary condition.
+      3) Non-homogeneous Dirichlet velocity with Dirichlet scalar bc.
 
     Args:
       u_bc: bc of the velocity component in flux_direction.
@@ -512,69 +525,103 @@ def get_advection_flux_bc_from_velocity_and_scalar_bc(
 
     Returns:
       BoundaryCondition instance for advection flux of c in flux_direction.
+
+    Example:
+    >>> u_bc = ConstantBoundaryConditions(((BCType.DIRICHLET, BCType.DIRICHLET),),  ((1.0, 2.0),))
+
+    >>> c_bc = ConstantBoundaryConditions(((BCType.DIRICHLET, BCType.DIRICHLET),), ((0.5, 1.5),))
+
+    >>> flux_bc = get_advection_flux_bc_from_velocity_and_scalar_bc(u_bc, c_bc,0)
+    # flux_bc will have values (0.5, 3.0) = (1.0*0.5, 2.0*1.5)
     """
     flux_bc_types = []
     flux_bc_values = []
-    if not isinstance(u_bc, HomogeneousBoundaryConditions):
+
+    # Handle both homogeneous and non-homogeneous boundary conditions
+    if isinstance(u_bc, HomogeneousBoundaryConditions):
+        u_values = tuple((0.0, 0.0) for _ in range(u_bc.ndim))
+    elif isinstance(u_bc, ConstantBoundaryConditions):
+        u_values = u_bc._values
+    else:
         raise NotImplementedError(
-            f"Flux boundary condition is not implemented for velocity with {u_bc}"
+            f"Flux boundary condition is not implemented for velocity with {type(u_bc)}"
         )
+
+    if isinstance(c_bc, HomogeneousBoundaryConditions):
+        c_values = tuple((0.0, 0.0) for _ in range(c_bc.ndim))
+    elif isinstance(c_bc, ConstantBoundaryConditions):
+        c_values = c_bc._values
+    else:
+        raise NotImplementedError(
+            f"Flux boundary condition is not implemented for scalar with {type(c_bc)}"
+        )
+
     for axis in range(c_bc.ndim):
         if u_bc.types[axis][0] == "periodic":
             flux_bc_types.append((BCType.PERIODIC, BCType.PERIODIC))
             flux_bc_values.append((None, None))
         elif flux_direction != axis:
-            # This is not technically correct. Flux boundary condition in most cases
-            # is a time dependent function of the current values of the scalar
-            # and velocity. However, because flux is used only to take divergence, the
-            # boundary condition on the flux along the boundary parallel to the flux
-            # direction has no influence on the computed divergence because the
-            # boundary condition only alters ghost cells, while divergence is computed
-            # on the interior.
-            # To simplify the code and allow for flux to be wrapped in gridVariable,
-            # we are setting the boundary to homogeneous dirichlet.
-            # Note that this will not work if flux is used in any other capacity but
-            # to take divergence.
+            # Flux boundary condition parallel to flux direction
+            # Set to homogeneous Dirichlet as it doesn't affect divergence computation
             flux_bc_types.append((BCType.DIRICHLET, BCType.DIRICHLET))
             flux_bc_values.append((0.0, 0.0))
         else:
+            # Flux direction is normal to the boundary
             flux_bc_types_ax = []
             flux_bc_values_ax = []
-            for i in range(2):  # lower and upper boundary.
 
-                # case 1: nonpourous boundary
-                if (
-                    u_bc.types[axis][i] == BCType.DIRICHLET
-                    and u_bc._values[axis][i] == 0.0
-                ):
+            for i in range(2):  # lower and upper boundary
+                u_type = u_bc.types[axis][i]
+                c_type = c_bc.types[axis][i]
+                u_val = u_values[axis][i] if u_values[axis][i] is not None else 0.0
+                c_val = c_values[axis][i] if c_values[axis][i] is not None else 0.0
+
+                # Case 1: Dirichlet velocity with Dirichlet scalar
+                if u_type == BCType.DIRICHLET and c_type == BCType.DIRICHLET:
+                    # Flux = u * c at the boundary
+                    flux_val = u_val * c_val
                     flux_bc_types_ax.append(BCType.DIRICHLET)
-                    flux_bc_values_ax.append(0.0)
+                    flux_bc_values_ax.append(flux_val)
 
-                # case 2: zero flux boundary
-                elif (
-                    u_bc.types[axis][i] == BCType.NEUMANN
-                    and c_bc.types[axis][i] == BCType.NEUMANN
-                ):
-                    if not isinstance(c_bc, ConstantBoundaryConditions):
+                # Case 2: Neumann velocity with Neumann scalar (zero flux condition)
+                elif u_type == BCType.NEUMANN and c_type == BCType.NEUMANN:
+                    # For zero flux: du/dn = 0 and dc/dn = 0 implies d(uc)/dn = 0
+                    if not math.isclose(u_val, 0.0) or not math.isclose(c_val, 0.0):
                         raise NotImplementedError(
-                            "Flux boundary condition is not implemented for scalar"
-                            + f" with {c_bc}"
-                        )
-                    if not math.isclose(c_bc._values[axis][i], 0.0):
-                        raise NotImplementedError(
-                            "Flux boundary condition is not implemented for scalar"
-                            + f" with {c_bc}"
+                            "Non-homogeneous Neumann boundary conditions for flux "
+                            "are not yet implemented"
                         )
                     flux_bc_types_ax.append(BCType.NEUMANN)
                     flux_bc_values_ax.append(0.0)
 
-                # no other case is supported
+                # Case 3: Mixed boundary conditions
+                elif u_type == BCType.DIRICHLET and c_type == BCType.NEUMANN:
+                    # If u is specified and dc/dn is specified, we can compute flux
+                    # flux = u * c, but c is not directly specified
+                    # This requires more complex handling - for now, raise error
+                    raise NotImplementedError(
+                        "Mixed Dirichlet velocity and Neumann scalar boundary "
+                        "conditions are not yet implemented"
+                    )
+
+                elif u_type == BCType.NEUMANN and c_type == BCType.DIRICHLET:
+                    # If du/dn is specified and c is specified
+                    # This also requires more complex handling
+                    raise NotImplementedError(
+                        "Mixed Neumann velocity and Dirichlet scalar boundary "
+                        "conditions are not yet implemented"
+                    )
+
                 else:
                     raise NotImplementedError(
-                        f"Flux boundary condition is not implemented for {u_bc, c_bc}"
+                        f"Flux boundary condition is not implemented for "
+                        f"u_bc={u_type} with value={u_val}, "
+                        f"c_bc={c_type} with value={c_val}"
                     )
-            flux_bc_types.append(flux_bc_types_ax)
-            flux_bc_values.append(flux_bc_values_ax)
+
+            flux_bc_types.append(tuple(flux_bc_types_ax))
+            flux_bc_values.append(tuple(flux_bc_values_ax))
+
     return ConstantBoundaryConditions(flux_bc_types, flux_bc_values)
 
 

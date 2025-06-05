@@ -17,10 +17,10 @@
 
 """Functions for approximating derivatives.
 
-Finite difference methods operate on GridVariable and return GridArray.
+Finite difference methods operate on GridVariable and return GridVariable without bc.
 Evaluating finite differences requires boundary conditions, which are defined
 for a GridVariable. But the operation of taking a derivative makes the boundary
-condition undefined, which is why the return type is GridArray.
+condition undefined, which is why the bc is removed.
 
 For example, if the variable c has the boundary condition c_b = 0, and we take
 the derivate dc/dx, then it is unclear what the boundary condition on dc/dx
@@ -28,18 +28,18 @@ should be. So programmatically, after taking finite differences and doing
 operations, the user has to explicitly assign boundary conditions to the result.
 
 Example:
-  c = GridVariable(c_array, c_boundary_condition)
+  c = GridVariable(c_array, offset, grid, c_boundary_condition)
   dcdx = finite_differences.forward_difference(c)  # returns GridArray
   c_new = c + dt * (-velocity * dcdx)  # operations on GridArrays
-  c_new = GridVariable(c_new, c_boundary_condition)  # assocaite BCs
+  c_new = GridVariable(c_new, offset, grid, c_boundary_condition)  # assocaite BCs
 """
 
 import math
 import typing
 from typing import Any, List, Optional, Sequence, Tuple, Union
-
+from functools import reduce
+import operator
 import torch
-
 from torch_cfd import boundaries, grids
 
 ArrayVector = Sequence[torch.Tensor]
@@ -64,65 +64,65 @@ def stencil_sum(*arrays: GridVariable, return_tensor=False) -> Union[GridVariabl
     return GridVariable(result, offset, grid)
 
 @typing.overload
-def forward_difference(u: GridVariable, axis: int) -> Union[GridVariable, torch.Tensor]: ...
+def forward_difference(u: GridVariable, dim: int) -> Union[GridVariable, torch.Tensor]: ...
 
 
 @typing.overload
 def forward_difference(
-    u: GridVariable, axis: Optional[Tuple[int, ...]] = ...
+    u: GridVariable, dim: Optional[Tuple[int, ...]] = ...
 ) -> Tuple[GridVariable, ...]: ...
 
 
-def forward_difference(u, axis=None):
+def forward_difference(u, dim=None):
     """Approximates grads with finite differences in the forward direction."""
-    if axis is None:
-        axis = range(-u.grid.ndim, 0)
-    if not isinstance(axis, int):
+    if dim is None:
+        dim = range(-u.grid.ndim, 0)
+    if not isinstance(dim, int):
         return tuple(
-            forward_difference(u, a) for a in axis
+            forward_difference(u, a) for a in dim
         )  # pytype: disable=wrong-arg-types  # always-use-return-annotations
-    diff = stencil_sum(u.shift(+1, axis), -u)
-    return diff / u.grid.step[axis]
+    diff = stencil_sum(u.shift(+1, dim), -u)
+    return diff / u.grid.step[dim]
 
 
 @typing.overload
-def central_difference(u: GridVariable, axis: int) -> GridVariable: ...
+def central_difference(u: GridVariable, dim: int) -> GridVariable: ...
 
 
 @typing.overload
 def central_difference(
-    u: GridVariable, axis: Optional[Tuple[int, ...]]
+    u: GridVariable, dim: Optional[Tuple[int, ...]]
 ) -> Tuple[GridVariable, ...]: ...
 
 
-def central_difference(u, axis=None):
+def central_difference(u, dim=None):
     """Approximates grads with central differences."""
-    if axis is None:
-        axis = range(-u.grid.ndim, 0)
-    if not isinstance(axis, int):
-        return tuple(central_difference(u, a) for a in axis)
-    diff = stencil_sum(u.shift(+1, axis), -u.shift(-1, axis))
-    return diff / (2 * u.grid.step[axis])
+    if dim is None:
+        dim = range(-u.grid.ndim, 0)
+    if not isinstance(dim, int):
+        return tuple(central_difference(u, a) for a in dim)
+    diff = stencil_sum(u.shift(+1, dim), -u.shift(-1, dim))
+    return diff / (2 * u.grid.step[dim])
 
 
 @typing.overload
-def backward_difference(u: GridVariable, axis: int) -> GridVariable: ...
+def backward_difference(u: GridVariable, dim: int) -> GridVariable: ...
 
 
 @typing.overload
 def backward_difference(
-    u: GridVariable, axis: Optional[Tuple[int, ...]]
+    u: GridVariable, dim: Optional[Tuple[int, ...]]
 ) -> Tuple[GridVariable, ...]: ...
 
 
-def backward_difference(u, axis=None):
+def backward_difference(u, dim=None):
     """Approximates grads with finite differences in the backward direction."""
-    if axis is None:
-        axis = range(-u.grid.ndim, 0)
-    if not isinstance(axis, int):
-        return tuple(backward_difference(u, a) for a in axis)
-    diff = stencil_sum(u, -u.shift(-1, axis))
-    return diff / u.grid.step[axis]
+    if dim is None:
+        dim = range(-u.grid.ndim, 0)
+    if not isinstance(dim, int):
+        return tuple(backward_difference(u, a) for a in dim)
+    diff = stencil_sum(u, -u.shift(-1, dim))
+    return diff / u.grid.step[dim]
 
 
 def divergence(v: GridVariableVector) -> GridVariable:
@@ -133,8 +133,7 @@ def divergence(v: GridVariableVector) -> GridVariable:
             "The length of `v` must be equal to `grid.ndim`."
             f"Expected length {grid.ndim}; got {len(v)}."
         )
-    differences = [backward_difference(u, axis) for axis, u in enumerate(v)]
-    return sum(differences)
+    return reduce(operator.add, [backward_difference(u, dim) for dim, u in enumerate(v)])
 
 
 def centered_divergence(v: GridVariableVector) -> GridVariable:
@@ -145,16 +144,14 @@ def centered_divergence(v: GridVariableVector) -> GridVariable:
             "The length of `v` must be equal to `grid.ndim`."
             f"Expected length {grid.ndim}; got {len(v)}."
         )
-    differences = [central_difference(u, axis) for axis, u in enumerate(v)]
-    return sum(differences)
-
+    return reduce(operator.add, [central_difference(u, dim) for dim, u in enumerate(v)])
 
 def laplacian(u: GridVariable) -> GridVariable:
     """Approximates the Laplacian of `u`."""
     scales = tuple(1 / s**2 for s in u.grid.step)
     result = -2 * u.data * sum(scales)
-    for axis in range(-u.grid.ndim, 0):
-        result += stencil_sum(u.shift(-1, axis), u.shift(+1, axis)) * scales[axis]
+    for d in range(-u.grid.ndim, 0):
+        result += stencil_sum(u.shift(-1, d), u.shift(+1, d)) * scales[d]
     return result
 
 
@@ -301,47 +298,47 @@ def laplacian_matrix_w_boundaries(
         raise NotImplementedError(f"Explicit laplacians are not implemented for {bc}.")
     if laplacians is None:
         laplacians = list(map(laplacian_matrix, grid.shape, grid.step))
-    for axis in range(-grid.ndim, 0):
-        if math.isclose(offset[axis], 0.5):
+    for dim in range(-grid.ndim, 0):
+        if math.isclose(offset[dim], 0.5):
             for i, side in enumerate(["lower", "upper"]):  # lower and upper boundary
-                if bc.types[axis][i] == boundaries.BCType.NEUMANN:
+                if bc.types[dim][i] == boundaries.BCType.NEUMANN:
                     _laplacian_boundary_neumann_cell_centered(
-                        laplacians, grid, axis, side
+                        laplacians, grid, dim, side
                     )
-                elif bc.types[axis][i] == boundaries.BCType.DIRICHLET:
+                elif bc.types[dim][i] == boundaries.BCType.DIRICHLET:
                     _laplacian_boundary_dirichlet_cell_centered(
-                        laplacians, grid, axis, side
+                        laplacians, grid, dim, side
                     )
-        if math.isclose(offset[axis] % 1, 0.0):
+        if math.isclose(offset[dim] % 1, 0.0):
             if (
-                bc.types[axis][0] == boundaries.BCType.DIRICHLET
-                and bc.types[axis][1] == boundaries.BCType.DIRICHLET
+                bc.types[dim][0] == boundaries.BCType.DIRICHLET
+                and bc.types[dim][1] == boundaries.BCType.DIRICHLET
             ):
                 # This function assumes homogeneous boundary and acts on the interior.
                 # Thus, the laplacian can be cut off past the edge.
                 # The interior grid has one fewer grid cell than the actual grid, so
                 # the size of the laplacian should be reduced.
-                laplacians[axis] = laplacians[axis][:-1, :-1]
-            elif boundaries.BCType.NEUMANN in bc.types[axis]:
+                laplacians[dim] = laplacians[dim][:-1, :-1]
+            elif boundaries.BCType.NEUMANN in bc.types[dim]:
                 raise NotImplementedError(
                     "edge-aligned Neumann boundaries are not implemented."
                 )
     return list(lap.to(device) for lap in laplacians) if device else laplacians
 
 
-def _linear_along_axis(c: GridVariable, offset: float, axis: int) -> GridVariable:
+def _linear_along_axis(c: GridVariable, offset: float, dim: int) -> GridVariable:
     """Linear interpolation of `c` to `offset` along a single specified `axis`."""
-    offset_delta = offset - c.offset[axis]
+    offset_delta = offset - c.offset[dim]
 
     # If offsets are the same, `c` is unchanged.
     if offset_delta == 0:
         return c
 
-    new_offset = tuple(offset if j == axis else o for j, o in enumerate(c.offset))
+    new_offset = tuple(offset if j == dim else o for j, o in enumerate(c.offset))
 
     # If offsets differ by an integer, we can just shift `c`.
     if int(offset_delta) == offset_delta:
-        data = grids.shift(c, int(offset_delta), axis).data
+        data = grids.shift(c, int(offset_delta), dim).data
         return GridVariable(
             data=data,
             offset=new_offset,
@@ -354,8 +351,8 @@ def _linear_along_axis(c: GridVariable, offset: float, axis: int) -> GridVariabl
     floor_weight = ceil - offset_delta
     ceil_weight = 1.0 - floor_weight
     data = (
-        floor_weight * c.shift(floor, axis).data
-        + ceil_weight * c.shift(ceil, axis).data
+        floor_weight * c.shift(floor, dim).data
+        + ceil_weight * c.shift(ceil, dim).data
     )
     return GridVariable(data, new_offset, c.grid, c.bc)
 
@@ -387,7 +384,7 @@ def linear(
         )
     interpolated = c
     for a, o in enumerate(offset):
-        interpolated = _linear_along_axis(interpolated, offset=o, axis=a)
+        interpolated = _linear_along_axis(interpolated, offset=o, dim=a)
     return interpolated
 
 
@@ -430,4 +427,4 @@ def curl_2d(v: GridVariableVector) -> GridVariable:
     grid = grids.consistent_grid_arrays(*v)
     if grid.ndim != 2:
         raise ValueError(f"Grid dimensionality is not 2: {grid.ndim}")
-    return forward_difference(v[1], axis=0) - forward_difference(v[0], axis=1)
+    return forward_difference(v[1], dim=0) - forward_difference(v[0], dim=1)

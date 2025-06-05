@@ -18,7 +18,7 @@
 
 import math
 from typing import Callable, Optional, Tuple
-
+from functools import partial
 import torch
 import torch.nn as nn
 
@@ -29,7 +29,10 @@ from torch_cfd import boundaries, grids
 Grid = grids.Grid
 GridVariable = grids.GridVariable
 GridVariableVector = grids.GridVariableVector
+FluxInterpFn = Callable[[GridVariable, GridVariableVector, float], GridVariable]
 
+def default(value, d):
+    return d if value is None else value
 
 def safe_div(x, y, default_numerator=1):
     """Safe division of `Array`'s."""
@@ -42,69 +45,79 @@ def van_leer_limiter(r):
 
 
 class Upwind(nn.Module):
-    """Upwind interpolation of `c` to `offset` based on velocity field `v`.
+    """Upwind interpolation module for scalar fields.
 
-    Interpolates values of `c` to `offset` in two steps:
-    1) Identifies the axis along which `c` is interpolated. (must be single axis)
-    2) For positive (negative) velocity along interpolation axis uses value from
-       the previous (next) cell along that axis correspondingly.
+    Upwind interpolation of a scalar field `c` to a 
+    target offset based on the velocity field `v`. The interpolation is done axis-wise and uses the upwind scheme where values are taken from upstream cells based on the flow direction.
+
+    The module identifies the interpolation axis (must be a single axis) and selects values from the previous cell for positive velocity or the next cell for negative velocity along that axis.
 
     Args:
-      c: quantitity to be interpolated.
-      offset: offset to which `c` will be interpolated. Must have the same
-        length as `c.offset` and differ in at most one entry.
-      v: velocity field with offsets at faces of `c`. One of the components
-        must have the same offset as `offset`.
-      dt: size of the time step. Not used.
+        grid: The computational grid on which interpolation is performed (this is only for testing purposes).
+        offset: Target offset to which scalar fields will be interpolated during
+            forward passes. Must be a tuple of floats with the same length as the grid dimensions.
 
-    Returns:
-      A `GridVariable` that containins the values of `c` after interpolation to
-      `offset`.
+    Note:
+        The target offset should be pre-specified at __init__().
 
-    Raises:
-      InconsistentOffsetError: if `offset` and `c.offset` differ in more than one entry.
+    Example:
+        >>> grid = Grid(shape=(64, 64))
+        >>> upwind = Upwind(grid=grid, offset=(1.0, 0.5))
+        >>> result = upwind(c, v, dt)
     """
-    def __init__(self,
-                 grid: Grid,
-                 offset: Tuple[float, ...] = (0.5, 0.5),
-                 offset_v: Tuple[Tuple[float, ...], ...] = ((1.0, 0.5), (0.5, 1.0))):
+
+    def __init__(
+        self,
+        grid: Grid,
+        target_offset: Tuple[float, ...] = (0.5, 0.5),
+    ):
         super().__init__()
         self.grid = grid
-        self.offset = offset
-        self.offset_v = offset_v
+        self.target_offset = target_offset # this is the offset to which we will interpolate c
 
     def forward(
         self,
         c: GridVariable,
-        offset: Tuple[float, ...],
         v: GridVariableVector,
         dt: Optional[float] = None,
-    ) -> torch.Tensor:
-        if c.offset == offset:
-            return c.data
+    ) -> GridVariable:
+        """
+        Args:
+            c: GridVariable representing the scalar field to be interpolated.
+            v: GridVariableVector representing the velocity field.
+            dt: Time step size (not used in this interpolation).
+        Returns:
+            A GridVariable containing the values of `c` after interpolation to `self.target_offset`.
+        """
+        if c.offset == self.target_offset:
+            return c
         interpolation_axes = tuple(
-            axis for axis, (cur, tgt) in enumerate(zip(c.offset, offset)) if cur != tgt
+            axis
+            for axis, (cur, tgt) in enumerate(zip(c.offset, self.target_offset))
+            if cur != tgt
         )
         if len(interpolation_axes) != 1:
             raise ValueError(
-                f"Offsets must differ in one entry, got {c.offset} vs {offset}"
+                f"Offsets must differ in one entry, got {c.offset} vs {self.target_offset}"
             )
-        (axis,) = interpolation_axes
-        u = v[axis]
-        
-        offset_delta = self.offset_v[axis][axis] - self.offset[axis]
-        # this should be the same with u.offset[axis] - c.offset[axis]
+        (dim,) = interpolation_axes
+        u = v[dim]
+
+        offset_delta = self.target_offset[dim] - c.offset[dim]
+        # self.target_offset[axis] should be the same with offset_v[axis][axis], which offset_v = ((1.5, 0.5), (0.5, 1.5)) for aligned_v
+        # the original v.offset is ((1.0, 0.5), (0.5, 1.0))
+        # which in turn should be the same with the original implementation u.offset[axis] - c.offset[axis]
         if int(offset_delta) == offset_delta:
-            return c.shift(int(offset_delta), axis).data
+            return c.shift(int(offset_delta), dim)
         floor = int(math.floor(offset_delta))
         ceil = int(math.ceil(offset_delta))
-        c_floor = c.shift(floor, axis).data
-        c_ceil = c.shift(ceil, axis).data
-        return  torch.where(u.data > 0, c_floor, c_ceil)
+        c_floor = c.shift(floor, dim).data
+        c_ceil = c.shift(ceil, dim).data
+        return GridVariable(torch.where(u.data > 0, c_floor, c_ceil), self.target_offset, c.grid, c.bc)
 
 
 class LaxWendroff(nn.Module):
-    """Lax_Wendroff interpolation of `c` to `offset` based on velocity field `v`.
+    """Lax_Wendroff interpolation of scalar field `c` to `offset` based on velocity field `v`.
 
     Interpolates values of `c` to `offset` in two steps:
     1) Identifies the axis along which `c` is interpolated. (must be single axis)
@@ -119,58 +132,65 @@ class LaxWendroff(nn.Module):
     Lax-Wendroff method can be used to form monotonic schemes when augmented with
     a flux limiter. See https://en.wikipedia.org/wiki/Flux_limiter
 
-    Args:
-      c: quantitity to be interpolated.
-      offset: offset to which we will interpolate `c`. Must have the same
-        length as `c.offset` and differ in at most one entry.
-      v: velocity field with offsets at faces of `c`. One of the components must
-        have the same offset as `offset`.
-      dt: size of the time step. Not used.
+    Args: 
+        grid: The computational grid on which interpolation is performed, only used for step.
+        offset: Target offset to which scalar fields will be interpolated during
+            forward passes. Target offset have the same length as `c.offset` in forward() and differ in at most one entry.
 
-    Returns:
-      A `GridVariable` that containins the values of `c` after interpolation to
-      `offset`.
     Raises:
-      InconsistentOffsetError: if `offset` and `c.offset` differ in more than one entry.
+      ValueError: if `offset` and `c.offset` differ in more than one entry.
     """
-    def __init__(self, grid: Grid,
-                 offset: Tuple[float, ...] = (0.5, 0.5),
-                 offset_v: Tuple[Tuple[float, ...], ...] = ((1.0, 0.5), (0.5, 1.0))):
+
+    def __init__(
+        self,
+        grid: Grid,
+        target_offset: Tuple[float, ...],
+    ):
         super().__init__()
-        self.grid = grid
-        self.offset = offset
-        self.offset_v = offset_v
+        self.grid = grid  
+        self.target_offset = target_offset 
 
     def forward(
         self,
         c: GridVariable,
-        offset: Tuple[float, ...],
         v: GridVariableVector,
         dt: float = 1.0,
-    ) -> torch.Tensor:
-        if c.offset == offset:
-            return c.data
+    ) -> GridVariable:
+        """
+        Args:
+         c: quantitity to be interpolated.
+         v: velocity field with offsets at faces of `c`. One of the components must have the same offset as the target offset.
+        dt: size of the time step. Not used.
+
+        Returns:
+            A tensor containing the values of `c` after interpolation to `self.target_offset`.
+            The returned value will have offset equal to `self.target_offset`.
+        """
+        if c.offset == self.target_offset:
+            return c
         interpolation_axes = tuple(
-            axis for axis, (cur, tgt) in enumerate(zip(c.offset, offset)) if cur != tgt
+            axis
+            for axis, (cur, tgt) in enumerate(zip(c.offset, self.target_offset))
+            if cur != tgt
         )
         if len(interpolation_axes) != 1:
             raise ValueError(
-                f"Offsets must differ in one entry, got {c.offset} vs {offset}"
+                f"Offsets must differ in one entry, got {c.offset} vs {self.target_offset}"
             )
-        (axis,) = interpolation_axes
-        u = v[axis]
-        offset_delta = self.offset_v[axis][axis] - self.offset[axis]
+        (dim,) = interpolation_axes
+        u = v[dim]
+        offset_delta = self.target_offset[dim] - c.offset[dim]
         # offset_delta = u.offset[axis] - c.offset[axis]
         floor = int(math.floor(offset_delta))
         ceil = int(math.ceil(offset_delta))
         # grid = grids.consistent_grid_arrays(c, u)
-        courant = (dt / self.grid.step[axis]) * u.data
-        c_floor = c.shift(floor, axis).data
-        c_ceil = c.shift(ceil, axis).data
+        courant = (dt / c.grid.step[dim]) * u.data
+        c_floor = c.shift(floor, dim).data
+        c_ceil = c.shift(ceil, dim).data
         pos = c_floor + 0.5 * (1 - courant) * (c_ceil - c_floor)
         neg = c_ceil - 0.5 * (1 + courant) * (c_ceil - c_floor)
-        return torch.where(u.data > 0, pos, neg)
-
+        return GridVariable(torch.where(u.data > 0, pos, neg), 
+                            self.target_offset, c.grid, c.bc)
 
 class AdvectAligned(nn.Module):
     """
@@ -192,6 +212,12 @@ class AdvectAligned(nn.Module):
     ```
 
     In this case, the returned advection term would have offset `(.5, .5, .5)`.
+
+    Args:
+        grid: The computational grid (only for testing purposes).
+        bcs_c: Boundary conditions for the gradient of scalar field components
+        bcs_v: Boundary conditions for each velocity component
+        offsets: Offsets for the control volume faces where `cs` and `v` are defined.
     """
 
     def __init__(
@@ -202,14 +228,6 @@ class AdvectAligned(nn.Module):
         offsets: Tuple[Tuple[float, ...], ...] = ((1.5, 0.5), (0.5, 1.5)),
         **kwargs,
     ):
-        """
-        Initialize the AdvectAligned module.
-
-        Args:
-            grid: The computational grid
-            cs_bc: Boundary conditions for the gradient of scalar field components
-            v_bc: Boundary conditions for each velocity component
-        """
         super().__init__()
         self.grid = grid
         self.bcs_c = bcs_c
@@ -229,6 +247,11 @@ class AdvectAligned(nn.Module):
                     bcs_v[i], bcs_c[i], i
                 )
                 for i in range(len(bcs_v))
+            )
+        else:
+            self.flux_bcs = tuple(
+                boundaries.periodic_boundary_conditions(ndim=grid.ndim)
+                for _ in range(len(bcs_c))
             )
 
     def forward(self, cs: GridVariableVector, v: GridVariableVector) -> GridVariable:
@@ -254,15 +277,17 @@ class AdvectAligned(nn.Module):
             )
 
         # Compute flux: cu
+        # if cs and v have different boundary conditions, 
+        # flux's bc will become None
         flux = GridVariableVector(tuple(c * u for c, u in zip(cs, v)))
 
         # Apply boundary conditions to flux if not periodic
-        if not self.is_periodic:
-            flux = GridVariableVector(
+        flux = GridVariableVector(
                 tuple(bc.impose_bc(f) for f, bc in zip(flux, self.flux_bcs))
             )
 
         # Return negative divergence of flux
+        # after taking divergence the bc becomes None
         return -fdm.divergence(flux)
 
 
@@ -270,32 +295,32 @@ class LinearInterpolation(nn.Module):
     """Multi-linear interpolation of `c` to `offset`.
 
     Args:
-        c: quantitity to be interpolated.
-        offset: offset to which we will interpolate `c`. Must have the same length
-        as `c.offset`.
-        v: velocity field. Not used.
-        dt: size of the time step. Not used.
-
-    Returns:
-        An `GridArray` containing the values of `c` after linear interpolation
-        to `offset`. The returned value will have offset equal to `offset`.
+        - offset: Target offset to which scalar fields will be interpolated during forward passes.
+        - grid: The computational grid on which interpolation is performed (this is only for testing purposes).
     """
+
     def __init__(
         self,
         grid: Grid,
-        offset: Tuple[float, ...] = (0.5, 0.5),
+        target_offset: Tuple[float, ...] = (0.5, 0.5),
         bc: Optional[boundaries.BoundaryConditions] = None,
-        interpolant: Callable = fdm.linear,
         **kwargs,
     ):
         super().__init__()
         self.grid = grid
-        self.offset = offset # this should be the same with the c.offset
         self.bc = bc
-        self.interpolant = interpolant
+        self.target_offset = target_offset
+        self.interpolant = partial(fdm.linear, offset=target_offset)
 
-    def forward(self, u: GridVariable, offset: Tuple[float, ...], **kwargs) -> GridVariable:
-        return self.interpolant(u, offset, **kwargs)
+    def forward(self, c: GridVariable, *args, **kwargs) -> GridVariable:
+        """
+        Args:
+            c: quantitity to be interpolated.
+
+        Returns:
+            An `GridVariable` containing the values of `c` after linear interpolation to `offset`. The returned value will have offset equal to `offset`.
+        """
+        return self.interpolant(c)
 
 
 class TVDInterpolation(nn.Module):
@@ -308,42 +333,44 @@ class TVDInterpolation(nn.Module):
     http://www.ita.uni-heidelberg.de/~dullemond/lectures/num_fluid_2012/Chapter_4.pdf
 
     Args:
-        interpolation_fn: higher order interpolation methods. Must follow the same
-        interface as other interpolation methods (take `c`, `offset`, `grid`, `v`
-        and `dt` arguments and return value of `c` at offset `offset`).
-        limiter: flux limiter function that evaluates the portion of the correction
-        (high_accuracy - low_accuracy) to add to low_accuracy solution based on
-        the ratio of the consequtive gradients. Takes array as input and return
-        array of weights. For more details see:
+        target_offset: offset to which we will interpolate `c`. 
+        Must have the same length as `c.offset` and differ in at most one entry. This offset should interface as other interpolation methods (take `c`, `v` and `dt` arguments and return value of `c` at offset `offset`).
+        limiter: flux limiter function that evaluates the portion of the correction (high_accuracy - low_accuracy) to add to low_accuracy solution based on the ratio of the consecutive gradients. 
+        Takes array as input and return array of weights. For more details see:
         https://en.wikipedia.org/wiki/Flux_limiter
-
-    Returns:
-        Interpolation method that uses a combination of high and low order methods
-        to produce monotonic interpolation method.
+        
     """
+
     def __init__(
         self,
         grid: Grid,
+        target_offset: Tuple[float, ...],
+        low_interp: FluxInterpFn = None,
+        high_interp: FluxInterpFn = None,
         limiter: Callable = van_leer_limiter,
-        **offset_kwargs
     ):
         super().__init__()
         self.grid = grid
-        self.low_interp = Upwind(grid=grid, 
-                                 **offset_kwargs)
-        self.high_interp = LaxWendroff(grid=grid,
-                                       **offset_kwargs)
+        self.low_interp = Upwind(grid, target_offset=target_offset) if low_interp is None else low_interp
+        self.high_interp = LaxWendroff(grid, target_offset=target_offset) if high_interp is None else high_interp
         self.limiter = limiter
+        self.target_offset = target_offset
 
     def forward(
         self,
         c: GridVariable,
-        offset: Tuple[float, ...],
         v: GridVariableVector,
         dt: float,
     ) -> GridVariable:
-        """Interpolate scalar field c to offset using Van Leer flux limiting."""
-        for axis, axis_offset in enumerate(offset):
+        """
+        Args:
+            c: GridVariable representing the scalar field to be interpolated.
+            v: GridVariableVector representing the velocity field.
+            dt: Time step size (not used in this interpolation).
+
+        Returns: 
+            Interpolated scalar field c to a target offset using Van Leer flux limiting, which uses a combination of high and low order methods to produce monotonic interpolation method."""
+        for axis, axis_offset in enumerate(self.target_offset):
             interpolation_offset = tuple(
                 [
                     c_offset if i != axis else axis_offset
@@ -355,8 +382,8 @@ class TVDInterpolation(nn.Module):
                     raise NotImplementedError(
                         "Only forward interpolation to control volume faces is supported."
                     )
-                c_low = self.low_interp(c, interpolation_offset, v, dt)
-                c_high = self.high_interp(c, interpolation_offset, v, dt)
+                c_low = self.low_interp(c, v, dt)
+                c_high = self.high_interp(c, v, dt)
                 c_left = c.shift(-1, axis).data
                 c_right = c.shift(1, axis).data
                 c_next_right = c.shift(2, axis).data
@@ -371,11 +398,14 @@ class TVDInterpolation(nn.Module):
         return c
 
 
-class AdvectionVanLeer(nn.Module):
+class AdvectionBase(nn.Module):
     """
     Base class for advection modules.
 
     Ported from Jax-CFD advect_general and _advect_aligned function
+    The user need to implement specifies
+    - _flux_interp
+    - _velocity_interp
 
     Computes advection of a scalar quantity `c` by the velocity field `v`.
 
@@ -388,56 +418,65 @@ class AdvectionVanLeer(nn.Module):
     4. Set the boundary condition on flux, which is inhereited from `c`.
     5. Return the negative divergence of the flux.
 
-    Args:
-
-    - velocity_interp: method for interpolating velocity field `v`.
-    - flux_interp: method for interpolating the gradient of the scalar field `c`.
-    dt: unused time-step.
+    Args: 
+        grid: Grid.
+        offset: the current scalar field `c` to be advected.
+        bc_c: Boundary conditions for the scalar field `c`.
+        bc_v: Boundary conditions for each component of the velocity field `v`.
+        limiter: Optional flux limiter function to be used in the interpolation.
 
     """
 
-    def __init__(
-        self,
-        dt: float = 1.0,
-        grid: Grid = None,
-        offset_c: Tuple[float, ...] = (0.5, 0.5),
-        offset_v: Tuple[Tuple[float, ...], ...] = ((1.0, 0.5), (0.5, 1.0)),
-        bc_c: boundaries.BoundaryConditions = boundaries.periodic_boundary_conditions(ndim=2),
-        bc_v: Tuple[boundaries.BoundaryConditions, ...] = (
-            boundaries.periodic_boundary_conditions(ndim=2),
-            boundaries.periodic_boundary_conditions(ndim=2),
-        ),
-        limiter: Callable = van_leer_limiter,
-        **kwargs,
-    ):
+    def __init__(self, 
+                 grid: Grid,
+                 offset: Tuple[float, ...],
+                 bc_c: boundaries.BoundaryConditions,
+                 bc_v: Tuple[boundaries.BoundaryConditions, ...],
+                 limiter: Optional[Callable] = None,
+                 ) -> None:
         super().__init__()
-        self.dt = dt
-        self.limiter = limiter
         self.grid = grid
-
-        self.offset_c = offset_c
-        self.offset_v = offset_v
-        self.bc_c = bc_c
-        self.bc_v = bc_v
-        
-        self.target_offsets = grids.control_volume_offsets(*offset_c)
-        self.advect_aligned = AdvectAligned(grid=grid, bcs_c=(bc_c, bc_c), bcs_v=bc_v, offsets=self.target_offsets)
-        self.tvd_interp = TVDInterpolation(grid=grid,
-                                           offset=offset_c,
-                                           offset_v=self.target_offsets,)
-        self.velocity_interp = nn.ModuleList(
-            LinearInterpolation(grid=grid, offset=offset, bc=bc)
-            for offset, bc in zip(offset_v, bc_v)
+        self.offset = offset if offset is not None else (0.5,) * grid.ndim
+        self.limiter = limiter
+        self.target_offsets = grids.control_volume_offsets(*offset)
+        bc_c = default(bc_c, boundaries.periodic_boundary_conditions(ndim=grid.ndim))
+        bc_v = default(
+            bc_v,
+            tuple(
+                boundaries.periodic_boundary_conditions(ndim=grid.ndim)
+                for _ in range(grid.ndim)
+            ),
         )
+        self.advect_aligned = AdvectAligned(
+            grid=grid, bcs_c=(bc_c, bc_c), bcs_v=bc_v, offsets=self.target_offsets)
+        self._flux_interp = nn.ModuleList() # placeholder
+        self._velocity_interp = nn.ModuleList() # placeholder
+
+    def __post_init__(self):
+        assert len(self._flux_interp) == len(self.target_offsets)
+        assert len(self._velocity_interp) == len(self.target_offsets)
+
+        for dim, interp in enumerate(self._flux_interp):
+            assert interp.target_offset == self.target_offsets[dim], f"Expected flux interpolation for dimension {dim} to have target offset {self.target_offsets[dim]}, but got {interp.target_offset}."
+        
+        for dim, interp in enumerate(self._velocity_interp):
+            assert interp.target_offset == self.target_offsets[dim], f"Expected velocity interpolation for dimension {dim} to have target offset {self.target_offsets[dim]}, but got {interp.target_offset}."
 
     def flux_interp(
         self,
         c: GridVariable,
-        offset: Tuple[float, ...],
         v: GridVariableVector,
         dt: float,
-    ) -> GridVariable:
-        return self.tvd_interp(c, offset, v, dt)
+    ) -> GridVariableVector:
+        return GridVariableVector(
+            tuple(interp(c, v, dt) for interp in self._flux_interp)
+        )
+
+    def velocity_interp(
+        self, v: GridVariableVector, *args, **kwargs
+    ) -> GridVariableVector:
+        """Interpolate the velocity field `v` to the target offsets."""
+        return GridVariableVector(tuple(interp(u) for interp, u in zip(self._velocity_interp, v)))
 
     def forward(
         self,
@@ -445,29 +484,136 @@ class AdvectionVanLeer(nn.Module):
         v: GridVariableVector,
         dt: float = 1.0,
     ):
-        if not boundaries.has_all_periodic_boundary_conditions(c):
-            raise NotImplementedError("Only periodic boundaries are implemented.")
+        """
+        Args:
+            c: the scalar field to be advected.
+            v: representing the velocity field.
+        
+        Returns:
+            An GridVariable containing the time derivative of `c` due to advection by `v`.
+        
+        """
+        aligned_v = self.velocity_interp(v)
 
-        aligned_v = GridVariableVector(
-            tuple(self.velocity_interp[i](u, offset)
-                for i, (u, offset) in enumerate(
-                    zip(v, self.target_offsets)
-                )
-            )
-        )
-
-        aligned_c = GridVariableVector(
-            tuple(self.flux_interp(c, offset, aligned_v, dt)
-                for offset in self.target_offsets))
+        aligned_c = self.flux_interp(c, aligned_v, dt)
 
         return self.advect_aligned(aligned_c, aligned_v)
 
 
+class AdvectionLinear(AdvectionBase):
+
+    def __init__(
+        self,
+        grid: Grid,
+        offset = (0.5, 0.5),
+        bc_c: boundaries.BoundaryConditions = boundaries.periodic_boundary_conditions(
+            ndim=2
+        ),
+        bc_v: Tuple[boundaries.BoundaryConditions, ...] = (
+            boundaries.periodic_boundary_conditions(ndim=2),
+            boundaries.periodic_boundary_conditions(ndim=2),
+        ),
+        **kwargs,
+    ):
+        super().__init__(grid, offset, bc_c, bc_v)
+        self._flux_interp = nn.ModuleList(
+            LinearInterpolation(grid, target_offset=offset)
+            for offset in self.target_offsets)
+
+        self._velocity_interp = nn.ModuleList(
+            LinearInterpolation(grid, target_offset=offset)
+            for offset in self.target_offsets)
+        
+
+class AdvectionUpwind(AdvectionBase):
+    """
+    Ported from Jax-CFD advect_general and _advect_aligned function
+    using upwind flux interpolation.
+    The initialization specifies
+    - flux_interp: a Upwind interpolation for each component of the velocity field `v`.
+    - velocity_interp: a LinearInterpolation for each component of the velocity field `v`.
+
+    Args: 
+        - offset: current offset of the scalar field `c` to be advected.
+    
+    Returns:
+        Aligned advection of the scalar field `c` by the velocity field `v` using the target offsets on the control volume faces.
+    """
+
+    def __init__(
+        self,
+        grid: Grid,
+        offset: Tuple[float, ...] = (0.5, 0.5),
+        bc_c: boundaries.BoundaryConditions = boundaries.periodic_boundary_conditions(
+            ndim=2
+        ),
+        bc_v: Tuple[boundaries.BoundaryConditions, ...] = (
+            boundaries.periodic_boundary_conditions(ndim=2),
+            boundaries.periodic_boundary_conditions(ndim=2),
+        ),
+        **kwargs,
+    ):
+        super().__init__(grid, offset, bc_c, bc_v)
+        self._flux_interp = nn.ModuleList(
+            Upwind(grid, target_offset=offset)
+            for offset in self.target_offsets
+        )
+
+        self._velocity_interp = nn.ModuleList(
+            LinearInterpolation(grid, target_offset=offset)
+            for offset in self.target_offsets
+        )
+
+
+class AdvectionVanLeer(AdvectionBase):
+    """
+    Ported from Jax-CFD advect_general and _advect_aligned function
+    using van_leer flux limiter.
+    The initialization specifies
+    - flux_interp: a TVDInterpolation with Upwind and LaxWendroff methods
+    - velocity_interp: a LinearInterpolation for each component of the velocity field `v`.
+
+    Args: 
+        - offset: current offset of the scalar field `c` to be advected.
+    
+    Returns:
+        Aligned advection of the scalar field `c` by the velocity field `v` using the target offsets on the control volume faces.
+    """
+
+    def __init__(
+        self,
+        grid: Grid,
+        offset: Tuple[float, ...] = (0.5, 0.5),
+        bc_c: boundaries.BoundaryConditions = boundaries.periodic_boundary_conditions(
+            ndim=2
+        ),
+        bc_v: Tuple[boundaries.BoundaryConditions, ...] = (
+            boundaries.periodic_boundary_conditions(ndim=2),
+            boundaries.periodic_boundary_conditions(ndim=2),
+        ),
+        limiter: Callable = van_leer_limiter,
+        **kwargs,
+    ):
+        super().__init__(grid, offset, bc_c, bc_v, limiter)
+        self._flux_interp = nn.ModuleList(
+            TVDInterpolation(
+                grid,
+                target_offset=offset,
+                limiter=limiter,
+            )
+            for offset in self.target_offsets
+        )
+
+        self._velocity_interp = nn.ModuleList(
+            LinearInterpolation(grid, target_offset=offset, bc=bc)
+            for offset, bc in zip(self.target_offsets, bc_v)
+        )
+
 class ConvectionVector(nn.Module):
     """Computes convection of a vector field `v` by the velocity field `u`.
-    
 
-    This function follows the following procedure:
+
+    This module follows the following procedure:
 
       1. Interpolate each component of `u` to the corresponding face of the
          control volume centered on `v`.
@@ -483,14 +629,9 @@ class ConvectionVector(nn.Module):
       - before the computation, the grid information is completely know, so one does not have to check dimensions or perform manipulation on-the-fly.
 
     Args:
-      v: the quantity (also velocity) to be transported.
-      u: a velocity field.
-      offsets: the offsets of the velocity field (MAC grid), should be the same for both u and v
-      bcs: boundary conditions for the velocity field to be convected. (u's boundary conditions do not matter)
-      dt: unused time-step.
+        offsets: the offsets of the velocity field (MAC grid), should be the same for both u and v.
+        bcs: boundary conditions for the velocity field to be convected. (u's boundary conditions do not matter)
 
-    Returns:
-      The directional derivative `v` due to advection by `u`.
     """
 
     def __init__(
@@ -509,8 +650,7 @@ class ConvectionVector(nn.Module):
         self.advect = nn.ModuleList(
             AdvectionVanLeer(
                 grid=grid,
-                offset_c=offset,
-                offset_v=offsets,
+                offset=offset,
                 bc_c=bc,
                 bc_v=bcs,
                 limiter=limiter,
@@ -527,12 +667,12 @@ class ConvectionVector(nn.Module):
         the divergence of the flux on the control volume.
 
         Args:
-            v: GridVariableVector to be advected
+            v: GridVariableVector (also velocity) to be advected/transported.
             u: GridVariableVector velocity field
             dt: Time step (overrides the instance dt if provided)
 
         Returns:
-            GridVariable containing the advection result
+            The directional derivative `v` due to advection by `u`.
         """
 
         return GridVariableVector(

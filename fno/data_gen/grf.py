@@ -34,7 +34,7 @@ class GRF2d(nn.Module):
         n=128,
         alpha=2,
         tau=3,
-        device="cuda",
+        device:torch.device=device,
         dtype=torch.float,
         normalize=False,
         smoothing=False,

@@ -16,7 +16,7 @@
 # ported Google's Jax-CFD functional template to PyTorch's tensor ops
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -37,6 +37,7 @@ def wrap_field_same_bcs(v, field_ref):
             GridVariable(a.data, a.offset, a.grid, w.bc) for a, w in zip(v, field_ref)
         )
     )
+
 
 class ProjectionExplicitODE(nn.Module):
     r"""Navier-Stokes equation in 2D with explicit stepping and a pressure projection (discrete Helmholtz decomposition by modding the gradient of a Laplacian inverse of the extra divergence).
@@ -145,7 +146,9 @@ class RKStepper(nn.Module):
             for a_ in a:
                 self.params["a"].append(
                     nn.Parameter(
-                        torch.tensor(a_, dtype=self.dtype, requires_grad=self.requires_grad)
+                        torch.tensor(
+                            a_, dtype=self.dtype, requires_grad=self.requires_grad
+                        )
                     )
                 )
             self.params["b"] = nn.Parameter(
@@ -245,7 +248,7 @@ class NavierStokes2DFVMProjection(ProjectionExplicitODE):
         convection: Callable = None,
         pressure_proj: Callable = None,
         forcing: Optional[ForcingFn] = None,
-        solver: RKStepper = None,
+        step_fn: RKStepper = None,
         **kwargs,
     ):
         """
@@ -263,7 +266,7 @@ class NavierStokes2DFVMProjection(ProjectionExplicitODE):
         self.drag = drag
         self.forcing = forcing
         self.convection = convection
-        self.solver = solver
+        self.step_fn = step_fn
         self.pressure_proj = pressure_proj
         self._set_pressure_bc()
         self._set_convect()
@@ -273,8 +276,7 @@ class NavierStokes2DFVMProjection(ProjectionExplicitODE):
         if self.convection is not None:
             self._convect = self.convection
         else:
-            self._convect = advection.ConvectionVector(grid=self.grid, 
-                                                       bcs=self.bcs)
+            self._convect = advection.ConvectionVector(grid=self.grid, bcs=self.bcs)
 
     def _set_pressure_projection(self):
         if self.pressure_proj is not None:
@@ -296,7 +298,7 @@ class NavierStokes2DFVMProjection(ProjectionExplicitODE):
     def _diffusion(self, v: GridVariableVector) -> GridVariableVector:
         """Returns the diffusion term for the velocity field."""
         alpha = self.viscosity / self.density
-        lapv = GridVariableVector(tuple(alpha*fdm.laplacian(u) for u in v))
+        lapv = GridVariableVector(tuple(alpha * fdm.laplacian(u) for u in v))
         return lapv
 
     def _explicit_terms(self, v, dt, **kwargs):
@@ -329,4 +331,4 @@ class NavierStokes2DFVMProjection(ProjectionExplicitODE):
             Updated velocity field after one time step
         """
 
-        return self.solver(u, dt, self)
+        return self.step_fn(u, dt, self)

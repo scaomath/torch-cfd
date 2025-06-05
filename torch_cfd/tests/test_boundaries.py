@@ -18,7 +18,6 @@
 
 from functools import partial
 
-import numpy as np
 import torch
 from absl.testing import absltest, parameterized
 
