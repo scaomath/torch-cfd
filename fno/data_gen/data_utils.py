@@ -33,16 +33,32 @@ class TqdmLoggingHandler(logging.Handler):
 
 
 def get_logger(filename, tqdm=True):
+    """
+    Create and configure a logger with file and stream handlers.
+
+    Args:
+        filename: Path to log file
+        tqdm: If True, use TqdmLoggingHandler for stream output
+
+    Returns:
+        Configured logger instance set to INFO level
+    """
+    # Force reconfiguration by removing existing handlers from root logger
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Create stream handler (tqdm-aware or standard)
     stream_handler = TqdmLoggingHandler() if tqdm else logging.StreamHandler(sys.stdout)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(message)s",
         datefmt="%d-%b-%Y %H:%M:%S",
-        handlers=[
-            logging.FileHandler(filename=filename),
-            stream_handler,
-        ],
+        handlers=[logging.FileHandler(filename=filename), stream_handler],
+        force=True,  # Force reconfiguration even if basicConfig was called before
     )
+
     return logging.getLogger()
 
 
@@ -134,7 +150,7 @@ def get_args_2d(desc="Data generation in 2D"):
         type=float,
         default=1e-2,
         metavar="eps",
-        help="singular coefficient in -eps*\Delta u + gamma*u= f",
+        help=r"singular coefficient in -eps*\Delta u + gamma*u= f",
     )
     parser.add_argument(
         "--filepath",

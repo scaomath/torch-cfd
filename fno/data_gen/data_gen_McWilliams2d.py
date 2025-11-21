@@ -20,8 +20,6 @@ from torch_cfd.spectral import *
 from fno.data_gen.trajectories import get_trajectory_imex
 from data_utils import *
 
-import logging
-
 from fno.pipeline import DATA_PATH, LOG_PATH
 
 
@@ -72,7 +70,6 @@ def main(args):
     )  # "2 * torch.pi"
     force_rerun = args.force_rerun
 
-    logger = logging.getLogger()
     logger.info(f"Generating data for McWilliams2d with {total_samples} samples")
 
     max_velocity = args.max_velocity  # 5
@@ -130,14 +127,13 @@ def main(args):
             f"random states: {random_state + idx} to {random_state + idx + batch_size-1}"
         )
 
-        vort_init = torch.stack(
-            [
-                filtered_vorticity_field(
-                    grid, peak_wavenumber, random_state=random_state + idx + k
+        vort_init = filtered_vorticity_field(
+                    grid, 
+                    peak_wavenumber, 
+                    batch_size=batch_size,
+                    random_state=random_state + idx
                 ).data
-                for k in range(batch_size)
-            ]
-        )
+
         vort_hat = fft.rfft2(vort_init).to(device)
 
         with tqdm(total=warmup_steps, disable=no_tqdm) as pbar:

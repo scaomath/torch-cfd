@@ -20,7 +20,6 @@ from torch_cfd.forcings import SinCosForcing
 from grf import GRF2d
 from fno.data_gen.trajectories import get_trajectory_imex
 from data_utils import *
-import logging
 
 from fno.pipeline import DATA_PATH, LOG_PATH
 

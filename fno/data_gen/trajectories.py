@@ -196,7 +196,7 @@ def get_trajectory_imex(
     num_steps: int = 1,
     record_every_steps: int = 1,
     pbar: bool = False,
-    pbar_desc: str = "generating trajectories using RK4",
+    pbar_desc: str = "generating trajectories using IMEX",
     require_grad: bool = False,
     dtype: torch.dtype = torch.complex64,
 ):

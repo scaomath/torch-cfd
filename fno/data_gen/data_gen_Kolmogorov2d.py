@@ -71,7 +71,6 @@ def main(args):
     )  # "2 * torch.pi"
     force_rerun = args.force_rerun
 
-    logger = logging.getLogger()
     logger.info(f"Generating data for Kolmogorov2d flow with {total_samples} samples")
 
     max_velocity = args.max_velocity  # 5
@@ -133,19 +132,16 @@ def main(args):
             f"random states: {random_state + idx} to {random_state + idx + batch_size-1}"
         )
 
-        vort_init = torch.stack(
-            [
-                curl_2d(
+        vort_init = curl_2d(
                     filtered_velocity_field(
                         grid,
                         max_velocity,
                         peak_wavenumber,
-                        random_state=random_state + i + k,
+                        batch_size=batch_size,
+                        random_state=random_state + idx,
                     )
                 ).data
-                for k in range(batch_size)
-            ]
-        )
+        
         vort_hat = fft.rfft2(vort_init).to(device)
 
         with tqdm(total=warmup_steps, disable=no_tqdm) as pbar:
@@ -195,7 +191,7 @@ def main(args):
     else:
         try:
             verify_trajectories(
-                data_filepath,
+                result,
                 dt=record_every_iters * dt,
                 T_warmup=T_warmup,
                 n_samples=1,
